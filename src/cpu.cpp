@@ -3,7 +3,7 @@
 #include <iostream>
 #include <iomanip> // 用于格式化输出
 #include <optional>
-#include "cup.h"
+#include "cpu.h"
 #include "instructions.h"
 #include "log.h"
 

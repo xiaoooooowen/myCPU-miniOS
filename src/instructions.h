@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
-#include "cup.h"
+#include "cpu.h"
 
 namespace cemu {
 

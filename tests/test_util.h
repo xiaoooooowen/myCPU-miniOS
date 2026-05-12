@@ -3,7 +3,7 @@
 
 #include <gtest/gtest.h>
 #include <fstream>
-#include "../src/cup.h"
+#include "../src/cpu.h"
 namespace cemu {
 
 // 消除警告： warning: cannot find entry symbol _start; defaulting to 0000000000000000

@@ -12,8 +12,8 @@ set(COMMON_SOURCES
         src/dram.cpp
         src/bus.h
         src/bus.cpp
-        src/cup.h
-        src/cup.cpp
+        src/cpu.h
+        src/cpu.cpp
         src/instructions.h
         src/instructions.cpp
         src/log.h

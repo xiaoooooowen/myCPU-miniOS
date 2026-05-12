@@ -2,7 +2,7 @@
 #include <vector>
 #include <cstdint>
 #include <fstream>
-#include "cup.h"
+#include "cpu.h"
 #include "log.h"
 #include "exception.h"
 

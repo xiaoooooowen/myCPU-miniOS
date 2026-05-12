@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "../../src/cup.h"
+#include "../../src/cpu.h"
 
 namespace cemu {
 

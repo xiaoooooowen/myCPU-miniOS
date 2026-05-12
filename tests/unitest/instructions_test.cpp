@@ -2,7 +2,7 @@
 #include <fstream>
 #include <vector>
 #include <iostream>
-#include "../../src/cup.h"
+#include "../../src/cpu.h"
 #include "../test_util.h"
 
 namespace cemu {
