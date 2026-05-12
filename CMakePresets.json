@@ -1,0 +1,17 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "default",
+            "displayName": "WSL Debug",
+            "description": "WSL GCC 13.3.0 Debug 构建",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build_wsl",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+                "CMAKE_C_COMPILER": "/usr/bin/cc"
+            }
+        }
+    ]
+}

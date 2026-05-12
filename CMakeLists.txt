@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.27)
-project(cemu)
+project(cemu LANGUAGES CXX)
 
 # 设置C++标准为C++20
 set(CMAKE_CXX_STANDARD 23)
