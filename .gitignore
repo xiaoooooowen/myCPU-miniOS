@@ -31,6 +31,9 @@ cmake-variants.yaml
 *.dylib
 *.bin
 
+# ============ 编译数据库（语言服务跳转用） ============
+compile_commands.json
+
 # ============ 生成的文件 ============
 report_artifacts/
 mycpu/
@@ -47,3 +50,7 @@ docs/*.gif
 # ============ Python 缓存 ============
 __pycache__/
 *.pyc
+# ============ Clang 缓存 ============
+.cache
+# ============ claude ============
+.claude
