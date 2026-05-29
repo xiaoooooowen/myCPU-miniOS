@@ -439,10 +439,11 @@ std::optional<uint64_t> executeAUIPC(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeJAL(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
-  auto imm = ((inst & 0x80000000) ? 0xfff00000 : 0) |
-             ((inst >> 20) & 0x7fe) |
-             ((inst >> 9) & 0x800) |
-             ((inst >> 12) & 0xff);
+  auto imm = static_cast<int64_t>(static_cast<int32_t>(
+      ((inst & 0x80000000) ? 0xfff00000 : 0) |
+      (((inst >> 12) & 0xff) << 12) |
+      ((inst >> 9) & 0x800) |
+      ((inst >> 20) & 0x7fe)));
 
   LOG(INFO, "JAL: x", rd, " = pc + 4; pc = pc + ", imm);
   cpu.regs[rd] = cpu.pc + 4;
@@ -463,10 +464,11 @@ std::optional<uint64_t> executeJALR(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeBEQ(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
-  int64_t imm = static_cast<int64_t>((((inst & 0x80000000) ? 0xFFF00000 : 0) |
-                                   ((inst & 0x80) << 4) |
-                                   ((inst >> 20) & 0x7E0) |
-                                   ((inst >> 7) & 0x1E)) << 1) >> 1;  // Sign-extend
+  int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                  ((inst & 0x80) << 4) |
+                  ((inst >> 20) & 0x7E0) |
+                  ((inst >> 7) & 0x1E);
+  int64_t imm = static_cast<int64_t>(inner);
 
   if (cpu.regs[rs1] == cpu.regs[rs2]) {
     LOG(INFO, "BEQ: pc = pc + ", imm);
@@ -657,10 +659,11 @@ std::optional<uint64_t> executeMRET(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeBNE(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    auto imm = static_cast<int64_t>((((inst & 0x80000000) ? 0xFFF00000 : 0) |
-                                     ((inst & 0x80) << 4) |
-                                     ((inst >> 20) & 0x7E0) |
-                                     ((inst >> 7) & 0x1E)) << 1) >> 1;  // Sign-extend
+    int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                    ((inst & 0x80) << 4) |
+                    ((inst >> 20) & 0x7E0) |
+                    ((inst >> 7) & 0x1E);
+    int64_t imm = static_cast<int64_t>(inner);
 
     if (cpu.regs[rs1] != cpu.regs[rs2]) {
         LOG(INFO, "BNE: pc = pc + ", imm);
@@ -682,16 +685,14 @@ std::optional<uint64_t> executeBNE(Cpu& cpu, uint32_t inst) {
  * @return If the branch is taken, returns the new program counter value. If the branch is not taken, returns std::nullopt.
  */
 std::optional<uint64_t> executeBLT(Cpu& cpu, uint32_t inst) {
-  // Unpack the instruction into its constituent parts
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  // Calculate the branch offset, taking into account that it's a signed value
-  int64_t imm = static_cast<int64_t>((static_cast<int64_t>(inst) & 0x80000000 ? 0xFFFFF000LL : 0) |
-                ((static_cast<uint64_t>(inst) & 0x80) << 4) |
-                ((inst >> 20) & 0x7E0) |
-                ((inst >> 7) & 0x1E));
+  int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                  ((inst & 0x80) << 4) |
+                  ((inst >> 20) & 0x7E0) |
+                  ((inst >> 7) & 0x1E);
+  int64_t imm = static_cast<int64_t>(inner);
 
-  // If the value in rs1 is less than the value in rs2, branch to the calculated offset
   if (static_cast<int64_t>(cpu.regs[rs1]) < static_cast<int64_t>(cpu.regs[rs2])) {
     LOG(INFO, "BLT: pc = pc + ", imm);
     return cpu.pc + imm;
@@ -703,10 +704,11 @@ std::optional<uint64_t> executeBLT(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeBGE(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    auto imm = static_cast<int64_t>((((inst & 0x80000000) ? 0xFFF00000 : 0) |
-                                     ((inst & 0x80) << 4) |
-                                     ((inst >> 20) & 0x7E0) |
-                                     ((inst >> 7) & 0x1E)) << 1) >> 1;  // Sign-extend
+    int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                    ((inst & 0x80) << 4) |
+                    ((inst >> 20) & 0x7E0) |
+                    ((inst >> 7) & 0x1E);
+    int64_t imm = static_cast<int64_t>(inner);
 
     if (static_cast<int64_t>(cpu.regs[rs1]) >= static_cast<int64_t>(cpu.regs[rs2])) {
         LOG(INFO, "BGE: pc = pc + ", imm);
@@ -718,16 +720,139 @@ std::optional<uint64_t> executeBGE(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeBGEU(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    auto imm = static_cast<int64_t>((((inst & 0x80000000) ? 0xFFF00000 : 0) |
-                                     ((inst & 0x80) << 4) |
-                                     ((inst >> 20) & 0x7E0) |
-                                     ((inst >> 7) & 0x1E)) << 1) >> 1;  // Sign-extend
+    int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                    ((inst & 0x80) << 4) |
+                    ((inst >> 20) & 0x7E0) |
+                    ((inst >> 7) & 0x1E);
+    int64_t imm = static_cast<int64_t>(inner);
 
     if (cpu.regs[rs1] >= cpu.regs[rs2]) {
         LOG(INFO, "BGEU: pc = pc + ", imm);
         return cpu.pc + imm;
     }
 
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeBLTU(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                    ((inst & 0x80) << 4) |
+                    ((inst >> 20) & 0x7E0) |
+                    ((inst >> 7) & 0x1E);
+    int64_t imm = static_cast<int64_t>(inner);
+
+    if (cpu.regs[rs1] < cpu.regs[rs2]) {
+        LOG(INFO, "BLTU: pc = pc + ", imm);
+        return cpu.pc + imm;
+    }
+
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSUB(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    LOG(INFO, "SUB: x", rd, " = x", rs1, " - x", rs2);
+    cpu.regs[rd] = cpu.regs[rs1] - cpu.regs[rs2];
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSLTU(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    LOG(INFO, "SLTU: x", rd, " = (x", rs1, " < x", rs2, ") ? 1 : 0");
+    cpu.regs[rd] = (cpu.regs[rs1] < cpu.regs[rs2]) ? 1 : 0;
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeECALL(Cpu& cpu, uint32_t inst) {
+    LOG(INFO, "ECALL");
+    switch (cpu.mode) {
+        case Machine:
+            throw Exception(ExceptionType::EnvironmentCallFromMMode, inst);
+        case Supervisor:
+            throw Exception(ExceptionType::EnvironmentCallFromSMode, inst);
+        case User:
+            throw Exception(ExceptionType::EnvironmentCallFromUMode, inst);
+        default:
+            throw Exception(ExceptionType::EnvironmentCallFromMMode, inst);
+    }
+}
+
+std::optional<uint64_t> executeEBREAK(Cpu& cpu, uint32_t inst) {
+    LOG(INFO, "EBREAK");
+    throw Exception(ExceptionType::Breakpoint, inst);
+}
+
+std::optional<uint64_t> executeWFI(Cpu& cpu, uint32_t inst) {
+    LOG(INFO, "WFI");
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeADDIW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
+    LOG(INFO, "ADDIW: x", rd, " = x", rs1, " + ", immediate);
+    int64_t result = static_cast<int32_t>(cpu.regs[rs1] + immediate);
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSLLIW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    uint32_t shamt = (inst >> 20) & 0x1f;
+    LOG(INFO, "SLLIW: x", rd, " = x", rs1, " << ", shamt);
+    int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) << shamt);
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSRLIW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    uint32_t shamt = (inst >> 20) & 0x1f;
+    LOG(INFO, "SRLIW: x", rd, " = x", rs1, " >> ", shamt);
+    int64_t result = static_cast<int32_t>(static_cast<uint32_t>(cpu.regs[rs1]) >> shamt);
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSRAIW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    uint32_t shamt = (inst >> 20) & 0x1f;
+    LOG(INFO, "SRAIW: x", rd, " = x", rs1, " >> ", shamt, " (arithmetic)");
+    int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) >> shamt);
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSUBW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    LOG(INFO, "SUBW: x", rd, " = x", rs1, " - x", rs2);
+    int64_t result = static_cast<int32_t>(cpu.regs[rs1]) - static_cast<int32_t>(cpu.regs[rs2]);
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSLLW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    LOG(INFO, "SLLW: x", rd, " = x", rs1, " << x", rs2);
+    int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) << (cpu.regs[rs2] & 0x1f));
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSRLW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    LOG(INFO, "SRLW: x", rd, " = x", rs1, " >> x", rs2);
+    int64_t result = static_cast<int32_t>(static_cast<uint32_t>(cpu.regs[rs1]) >> (cpu.regs[rs2] & 0x1f));
+    cpu.regs[rd] = static_cast<uint64_t>(result);
+    return cpu.update_pc();
+}
+
+std::optional<uint64_t> executeSRAW(Cpu& cpu, uint32_t inst) {
+    auto [rd, rs1, rs2] = unpackInstruction(inst);
+    LOG(INFO, "SRAW: x", rd, " = x", rs1, " >> x", rs2, " (arithmetic)");
+    int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) >> (cpu.regs[rs2] & 0x1f));
+    cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
 }
 
@@ -791,6 +916,7 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
     {std::make_tuple(0x63, 0x1), executeBNE},
     {std::make_tuple(0x63, 0x4), executeBLT},
     {std::make_tuple(0x63, 0x5), executeBGE},
+    {std::make_tuple(0x63, 0x6), executeBLTU},
     {std::make_tuple(0x63, 0x7), executeBGEU},
     {std::make_tuple(0x73, 0x1), executeCSR_RW},
     {std::make_tuple(0x73, 0x2), executeCSR_RS},
@@ -817,14 +943,27 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
     {std::make_tuple(0x13, 0x5, 0x00), executeSrli},
     {std::make_tuple(0x13, 0x5, 0x20), executeSrai},
     {std::make_tuple(0x33, 0x0, 0x00), executeAdd},
+    {std::make_tuple(0x33, 0x0, 0x20), executeSUB},
     {std::make_tuple(0x33, 0x1, 0x00), executeSll},
     {std::make_tuple(0x33, 0x2, 0x00), executeSlt},
+    {std::make_tuple(0x33, 0x3, 0x00), executeSLTU},
     {std::make_tuple(0x33, 0x4, 0x00), executeXor},
     {std::make_tuple(0x33, 0x5, 0x00), executeSrl},
     {std::make_tuple(0x33, 0x5, 0x20), executeSra},
     {std::make_tuple(0x33, 0x6, 0x00), executeOr},
     {std::make_tuple(0x33, 0x7, 0x00), executeAnd},
+    {std::make_tuple(0x1b, 0x0, 0x00), executeADDIW},
+    {std::make_tuple(0x1b, 0x1, 0x00), executeSLLIW},
+    {std::make_tuple(0x1b, 0x5, 0x00), executeSRLIW},
+    {std::make_tuple(0x1b, 0x5, 0x20), executeSRAIW},
     {std::make_tuple(0x3b, 0x0, 0x00), executeAddw},
+    {std::make_tuple(0x3b, 0x0, 0x20), executeSUBW},
+    {std::make_tuple(0x3b, 0x1, 0x00), executeSLLW},
+    {std::make_tuple(0x3b, 0x5, 0x00), executeSRLW},
+    {std::make_tuple(0x3b, 0x5, 0x20), executeSRAW},
+    {std::make_tuple(0x73, 0x0, 0x00), executeECALL},
+    {std::make_tuple(0x73, 0x0, 0x01), executeEBREAK},
+    {std::make_tuple(0x73, 0x0, 0x10), executeWFI},
     {std::make_tuple(0x73, 0x0, 0x9), executeSFENCE_VMA},
     {std::make_tuple(0x73, 0x0, 0x8), executeSRET},
     {std::make_tuple(0x73, 0x0, 0x18), executeMRET},

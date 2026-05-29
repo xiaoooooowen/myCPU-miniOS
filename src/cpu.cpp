@@ -9,6 +9,8 @@
 
 namespace cemu {
 
+Cpu::~Cpu() = default;
+
 std::optional<uint64_t> Cpu::load(uint64_t addr, uint64_t size) {
   return bus.load(addr, size);
 }

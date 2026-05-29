@@ -39,7 +39,14 @@ public:
       mode = Machine;
   }
 
-  std::optional<uint64_t> load(uint64_t addr, uint64_t size);
+  ~Cpu();
+
+  Cpu(const Cpu&) = delete;
+  Cpu& operator=(const Cpu&) = delete;
+  Cpu(Cpu&&) = default;
+  Cpu& operator=(Cpu&&) = default;
+
+  std::optional<uint64_t> load(uint64_t addr, uint64_t size); //
 
   bool store(uint64_t addr, uint64_t size, uint64_t value);
 
@@ -71,5 +78,5 @@ private:
 };
 
 }
-
+//5.18学习至此
 

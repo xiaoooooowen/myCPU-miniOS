@@ -5,6 +5,220 @@
 
 ***
 
+## 2026-05-29 — 阶段 0.5 全部完成 + 阶段 1 MiniOS 启动成功
+
+### 背景
+
+这是项目启动以来最大规模的推进。目标：完成阶段 0.5（前置工程任务）和阶段 1（裸机程序加载与运行），让 MiniOS 在自研模拟器上成功启动并输出。
+
+任务执行顺序（按依赖关系排列）：
+1. 修复 UART 测试挂起
+2. Bus MMIO 路由（UART/CLINT/PLIC）
+3. 指令集覆盖补全（14 条缺失指令）
+4. CSR 访问抽象层
+5. 内存布局与链接脚本 + MiniOS 裸机程序
+6. 修复 JAL 立即数解码 bug
+7. 修复 B-type 分支指令立即数解码 bug
+
+### 修改清单
+
+#### 1. 修复 UART 测试挂起
+
+**文件**：[uart.h](file:///home/xiaowen/projects/mycpu/src/uart.h)、[uart.cpp](file:///home/xiaowen/projects/mycpu/src/uart.cpp)
+
+**问题**：UART 构造函数无条件启动 `std::thread` 阻塞在 `std::cin >> byte`，导致非交互环境（ctest）下测试挂起。
+
+**修复**：stdin 监听线程改为通过构造函数参数控制，默认不启动。
+
+**修复后**：5 个 UART 测试全部通过，总测试数从 67 增长到 78。
+
+#### 2. Bus MMIO 路由（UART/CLINT/PLIC）
+
+**文件**：[bus.h](file:///home/xiaowen/projects/mycpu/src/bus.h)、[bus.cpp](file:///home/xiaowen/projects/mycpu/src/bus.cpp)
+
+**内容**：
+- Bus 中加入 UART、CLINT、PLIC 的地址路由判断
+- UART 范围 `0x10000000 - 0x1000000F`
+- CLINT 范围 `0x02000000 - 0x0200BFFF`
+- PLIC 范围 `0x0C000000 - 0x0FFFFFFF`
+- 未知地址抛出 LoadAccessFault/StoreAMOAccessFault
+
+**遇到的工程问题**：
+
+**(a) 循环依赖 (uart.h ↔ bus.h)**
+UART 原本 `#include "bus.h"`，Bus 要 `#include "uart.h"`，形成循环依赖。
+**解决**：移除 `uart.h` 中的 `#include "bus.h"`，改用 forward declaration + `std::unique_ptr<Uart>`。
+
+**(b) unique_ptr 不完整类型错误**
+Bus 的移动构造/赋值默认实现在头文件中，需要完整 UART 类型才能销毁 `unique_ptr<Uart>`。
+**解决**：将 Bus 的析构函数、移动构造、移动赋值定义移到 bus.cpp（其中已包含 uart.h）。
+
+**(c) Cpu 移动构造被删除**
+因为 Bus 的不可移动性向上传递导致 Cpu 不可移动。
+**解决**：显式声明 `~Cpu()` 在 cpu.h、定义在 cpu.cpp，并显式 `= default` 移动操作。
+
+**测试**：bus_test.cpp 新增 MMIO 路由测试（UART/CLINT/PLIC 读写）。
+
+#### 3. 指令集覆盖补全
+
+**文件**：[instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+新增 14 条指令实现并注册到 dispatch table：
+
+| 指令 | 类别 | 说明 |
+|------|------|------|
+| BLTU | 分支 | 无符号小于分支 |
+| SUB | 算术 | 减法 |
+| SLTU | 算术 | 无符号比较置位 |
+| ECALL | 系统 | 环境调用（目前空实现） |
+| EBREAK | 系统 | 断点（目前空实现） |
+| WFI | 系统 | 等待中断（目前空实现） |
+| ADDIW | RV64I | 字立即数加法 |
+| SLLIW | RV64I | 字立即数左移 |
+| SRLIW | RV64I | 字立即数逻辑右移 |
+| SRAIW | RV64I | 字立即数算术右移 |
+| SUBW | RV64I | 字减法 |
+| SLLW | RV64I | 字左移 |
+| SRLW | RV64I | 字逻辑右移 |
+| SRAW | RV64I | 字算术右移 |
+
+#### 4. CSR 访问抽象层
+
+**文件**：[os/include/csr.h](file:///home/xiaowen/projects/mycpu/os/include/csr.h)（新增）
+
+为 MiniOS 裸机程序提供 CSR 访问宏：
+- `CSRR(rd, csr)` — 读 CSR
+- `CSRW(csr, rs)` — 写 CSR
+- `CSRS(csr, rs)` — 置位 CSR
+- `CSRC(csr, rs)` — 清零 CSR
+
+**注意**：编译参数需使用 `-march=rv64i_zicsr`，因为 `zicsr` 在新工具链中被分离为独立扩展。
+
+#### 5. 内存布局与链接脚本 + MiniOS 裸机程序
+
+**新增文件**：
+- [os/linker.ld](file:///home/xiaowen/projects/mycpu/os/linker.ld) — 链接脚本
+- [os/boot/start.S](file:///home/xiaowen/projects/mycpu/os/boot/start.S) — 启动汇编
+- [os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c) — 内核 C 代码
+- [os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile) — 构建 Makefile
+
+**链接脚本关键决策**：
+- `OUTPUT_ARCH(riscv)` — 注意是 `riscv` 不是 `riscv64`
+- 代码从 `0x80000000` 开始（RISC-V 平台 DRAM 典型起始地址）
+- 编译器需使用 `-mcmodel=medany`（支持任意地址，避免 medlow 的重定位溢出）
+
+**启动流程**：
+1. start.S 设置栈指针（`la sp, _stack_top`）
+2. 清零 BSS 段（`memset` 循环）
+3. 跳转到 `kernel_main()`
+
+**内核功能**：
+- `uart_putc(char)` — 轮询等待 UART LSR THRE 位，然后写入 THR
+- `uart_puts(const char*)` — 字符串输出
+- `print_hex(uint64_t)` — 十六进制打印
+- `kernel_main()` — 输出 "MiniOS booting...\\nHello from kernel!\\n"，然后 `while(1){}`
+
+#### 6. 修复 JAL 立即数解码 bug（🔴 致命）
+
+**文件**：[instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+**问题**：JAL 指令的 imm[19:12] 位域被放在 result 的 bits [7:0] 而非 [19:12]，且 unsigned 类型导致符号扩展失效。
+
+```cpp
+// 修复前
+((inst >> 12) & 0xff)  // imm[19:12] 错误放在 bits[7:0]
+
+// 修复后
+(((inst >> 12) & 0xff) << 12)  // imm[19:12] 正确放在 bits[19:12]
+```
+
+同时强制使用 `int32_t` 类型确保符号扩展正确：
+```cpp
+auto imm = static_cast<int64_t>(static_cast<int32_t>(...));
+```
+
+#### 7. 修复 B-type 分支指令立即数解码 bug（🔴 致命）
+
+**文件**：[instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+这是本轮最核心、耗时最长的 bug 修复，影响 BEQ/BNE/BLT/BGE/BGEU/BLTU 全部 6 条分支指令。
+
+**Bug 根因分析（两个叠加 bug）**：
+
+| Bug | 说明 |
+|-----|------|
+| **unsigned 类型陷阱** | 代码使用 `((inner) << 1) >> 1` 技巧做符号扩展，但 `inner` 是 unsigned 类型（通过 `auto` 推导），导致 `>> 1` 执行逻辑右移（补 0）而非算术右移（补符号位） |
+| **掩码宽度错误** | 使用 `0xFFF00000`（覆盖 bits [31:20]），但 B-type 12 位立即数的符号在 bit 12，需要 `0xFFFFF000`（覆盖 bits [31:12]） |
+
+**诊断过程**：
+1. 运行 MiniOS 发现 BNE 指令跳转到非法地址（PC = `0x7ff010a0`），导致 Fatal Exception
+2. 手动解码 BNE 指令 `0xFE0790E3`，确认 offset = -32（正确）
+3. 发现模拟器中 offset = +2146439136（巨大正数），确认符号扩展失败
+4. 定位到 `<< 1 >> 1` 在 unsigned 类型上的逻辑右移问题
+5. 定位到 `0xFFF00000` 掩码不够宽的问题
+
+**修复方案**：
+```cpp
+// 修复后：6 条 B-type 指令统一模式
+int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                ((inst & 0x80) << 4) |
+                ((inst >> 20) & 0x7E0) |
+                ((inst >> 7) & 0x1E);
+int64_t imm = static_cast<int64_t>(inner);
+```
+
+使用 `int32_t` 确保符号扩展是算术扩展（而非逻辑扩展），`0xFFFFF000` 正确覆盖比特 [31:12]。
+
+### 构建验证
+
+```bash
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+cd os && make                        # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+Total Test time (real) = 84.13 sec
+```
+
+### MiniOS 运行结果
+
+模拟器运行 MiniOS，扫描 UART 输出：
+```
+4d 69 6e 69 4f 53 20 62 6f 6f 74 69 6e 67 2e 2e 2e 0a
+48 65 6c 6c 6f 20 66 72 6f 6d 20 6b 65 72 6e 65 6c 21 0a
+```
+
+解码为 ASCII：
+```
+MiniOS booting...
+Hello from kernel!
+```
+
+- 37 次 UART 写入
+- 0 次 Fatal 异常
+- 内核在 `while(1){}` 死循环中正常运转
+
+### 经验笔记
+
+1. **unsigned 类型陷阱是 C/C++ 的经典问题**：`auto` 推导纯整数运算结果时，如果所有操作数都是 unsigned，结果也是 unsigned。unsigned 上的 `>>` 是逻辑右移（补 0），不是算术右移。符号扩展必须使用 int32_t 等有符号类型。
+
+2. **掩码宽度要匹配立即数的实际比特数**：B-type 有 12 位立即数，imm[12] 是符号位。掩码需要覆盖到 bit 12（即 `0xFFFFF000`），而不是 `0xFFF00000`。
+
+3. **forward declaration + unique_ptr 是打破 C++ 循环依赖的正确模式**：头文件中只需要 forward declaration 和 `unique_ptr` 声明，所有需要完整类型的操作（析构、移动）放到 .cpp 中。
+
+4. **链接脚本的 OUTPUT_ARCH 是 `riscv` 不是 `riscv64`**：GNU ld 对 RISC-V 使用 `OUTPUT_ARCH(riscv)`。
+
+5. **`-mcmodel=medany` 对高地址运行是必需的**：默认的 `medlow` 代码模型只支持低 2GB 地址空间，从 `0x80000000` 开始运行必须用 `medany`。
+
+6. **手动解码指令是有效的调试手段**：当模拟器行为异常时，用指令编码表手动解码立即数，对比模拟器输出，可以有效定位 bug。
+
+7. **一个小 bug 可以完全阻塞整个项目**：B-type 立即数解码的 unsigned 右移问题，导致 MiniOS 第 50+ 条指令就无法继续执行。如果不会手动解码指令或没有系统化的调试方法，这个问题非常难发现。
+
+***
+
 ## 2026-05-12 — 构建系统优化与命名规范化
 
 ### 背景
