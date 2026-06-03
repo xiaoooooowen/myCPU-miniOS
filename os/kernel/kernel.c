@@ -1,8 +1,29 @@
 #include "uart.h"
 #include "printk.h"
-#include "timer.h"
 #include "mem.h"
+#include "task.h"
+#include "timer.h"
+#include "trap.h"
 #include "../include/csr.h"
+
+/* Phase 7 抢占式调度测试任务：不调用 yield()，纯靠定时器中断切换 */
+static void task_a(void) {
+    int count = 0;
+    while (1) {
+        printk("[Task A] count=%d\n", count++);
+        for (volatile int i = 0; i < 1000; i++)
+            ;
+    }
+}
+
+static void task_b(void) {
+    int count = 0;
+    while (1) {
+        printk("[Task B] count=%d\n", count++);
+        for (volatile int i = 0; i < 1000; i++)
+            ;
+    }
+}
 
 void kernel_main(void) {
     uart_init();
@@ -60,12 +81,24 @@ void kernel_main(void) {
     printk("Returned from trap handler!\n");
     printk("Trap round-trip successful!\n");
 
-    printk("--- Phase 4: Timer Interrupt Test ---\n");
-    timer_init();
-    local_irq_enable();
+    printk("--- Phase 7: Preemptive Scheduling ---\n");
 
-    printk("Waiting for timer interrupts...\n");
+    task_init();
+
+    task_create(task_a, "task_a");
+    task_create(task_b, "task_b");
+
+    /* 使能 M 模式全局中断 + 启动定时器中断 — 周期性触发抢占式调度 */
+    csr_set(mstatus, MSTATUS_MIE);
+    timer_init();
+
+    /* 进入抢占式调度，静默定时器中断的 trap 输出噪音 */
+    trap_set_silent(1);
+
+    int idle_count = 0;
     while (1) {
-        __asm__ volatile("wfi");
+        printk("[Idle ] count=%d\n", idle_count++);
+        for (volatile int i = 0; i < 1000; i++)
+            ;
     }
 }

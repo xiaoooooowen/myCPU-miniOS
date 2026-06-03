@@ -22,6 +22,4 @@ void timer_handle(void) {
 
     /* 设置下一次定时器中断 */
     *mtimecmp = *mtime + TIMER_INTERVAL;
-
-    printk("Tick #%u @ mtime=%lx\n", tick_count, *mtime);
 }

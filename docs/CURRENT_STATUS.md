@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
 > 冻结时间：2026-06-03
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 全部完成
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 全部完成，阶段 7 开发中
 
 ## 一、环境信息
 
@@ -88,46 +88,43 @@ Long hex: 0x80000000
 Char: Z
 Percent: 100%
 --- Phase 5: Memory Allocator Test ---
-Free pages: 32702
-Alloc p1: 0x80002000
-Alloc p2: 0x80003000
-Alloc p3: 0x80004000
-Free pages after alloc: 32699
+Free pages: 32701
+Alloc p1: 0x80003000
+Alloc p2: 0x80004000
+Alloc p3: 0x80005000
+Free pages after alloc: 32698
 p1 data: ABCDEFGHIJKLMNOP
-Free pages after kfree(p2): 32700
-Alloc p4: 0x80003000 (should == p2: 0x80003000)
-Free pages after cleanup: 32702
+Free pages after kfree(p2): 32699
+Alloc p4: 0x80004000 (should == p2: 0x80004000)
+Free pages after cleanup: 32701
 Memory allocator test passed!
 --- Phase 3: ECALL Trap Test ---
 Triggering ECALL to test trap handler...
 === TRAP ===
 mcause: 0xa
-mepc:   0x8000011c
+mepc:   0x80000380
 mtval:  0x73
 Type: Exception (0xa)
   -> Environment call from M-mode
 === TRAP END ===
 Returned from trap handler!
 Trap round-trip successful!
---- Phase 4: Timer Interrupt Test ---
-Timer initialized: mtime=0x4e83, mtimecmp=0x506c
-=== TRAP ===
-mcause: 0x8000000000000007
-mepc:   0x80000054
-mtval:  0x0
-Type: Interrupt (0x7)
-  -> Machine timer interrupt
-Tick #1 @ mtime=0x7186
-=== TRAP END ===
-Tick #2 @ mtime=0x9363
-Tick #3 @ mtime=0xb54e
-... (周期性触发)
+--- Phase 7: Preemptive Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x80000040)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x800000a4)
+Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
+[Idle ] count=0
+[Idle ] count=1
+[Idle ] count=2
 ```
 
 - ECALL 触发 trap → handler 解码 mcause=0xa → mepc+4 → mret 返回 → 继续执行
 - 定时器中断周期性触发（约每 500 cycles），中断 handler 打印 tick 计数后 mret 回到 wfi 循环
 - 中断 mcause 带 bit63 置位（0x8000000000000007），异常 mcause 不带（0xa）
-- 内存分配器：102KB 内核区域占 24 页，剩余 32702 页可分配。bump+free_list 混合算法，O(1) 初始化，分配/释放均页对齐。释放后重新分配回到同一地址
+- 内存分配器：内核区域约 102KB，堆区从 0x80003000 开始，剩余约 32701 页可分配。bump+free_list 混合算法，O(1) 初始化,分配/释放均页对齐
+- 协作式调度（阶段6）：3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，yield() 主动让出 CPU
+- 抢占式调度（阶段7，开发中）：定时器中断驱动 sched_tick()，通过修改 trap frame 中 callee-saved 寄存器和 mepc 实现任务切换。当前已知问题：任务 a/b 未被成功调度，仅 idle 运行
 
 ## 四、模块完成度
 
@@ -148,11 +145,13 @@ Tick #3 @ mtime=0xb54e
 | MiniOS UART 驱动 | os/kernel/uart.h/c | ✅ 完成 | uart_init/uart_putc/uart_puts 分离为独立模块 |
 | MiniOS 内核日志 | os/kernel/printk.h/c | ✅ 完成 | 支持 %s/%d/%x/%lx/%c/%%，免除法实现避免依赖 libgcc |
 | CSR 抽象层 | os/include/csr.h | ✅ 完成 | CSRR/CSRW/CSRS/CSRC 宏封装，含 trap 别名宏（TRAP_VEC/EPC/CAUSE/TVAL/STATUS） |
-| Trap 入口汇编 | os/kernel/trap.S | ✅ 完成（阶段 3） | 保存全部 32 个寄存器到栈帧，调用 C handler，恢复后 mret |
-| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3） | 读取 mcause/mepc/mtval，区分异常/中断，timer 中断调用 timer_handle() |
-| 定时器驱动 | os/kernel/timer.h/c | ✅ 完成（阶段 4） | CLINT MMIO 读写，mtimecmp 设置，MTIE 使能，tick 计数 |
+| Trap 入口汇编 | os/kernel/trap.S | ✅ 完成（阶段 3，阶段 7 增强） | 保存全部 32 个寄存器到 trap frame (256B)，将 sp (trap frame 基址) 作为 a0 传入 trap_handler，恢复后 mret |
+| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3，阶段 7 增强） | trap_handler(tf) 接收 trap frame 指针，定时器中断调用 sched_tick(tf)，trap_set_silent() 静默模式减少输出噪音 |
+| 定时器驱动 | os/kernel/timer.h/c | ✅ 完成（阶段 4） | CLINT MMIO 读写，mtimecmp 设置，MTIE 使能，timer_handle 精简为纯 set + count |
 | CPU 中断检测 | cpu.h/cpp | ✅ 完成（阶段 4） | check_pending_interrupts() + handle_interrupt() |
 | 物理内存分配器 | os/kernel/mem.h/c | ✅ 完成（阶段 5） | bump allocator + 空闲链表混合，kalloc/kfree/mem_free_pages |
+| 任务管理 | os/kernel/task.h/c | ✅ 完成（阶段 6，阶段 7 增强） | task_struct + context 帧，yield() 协作式调度，sched_tick(tf) 抢占式调度入口 |
+| 上下文切换 | os/kernel/switch.S | ✅ 完成（阶段 6） | switch_to 汇编，保存/恢复 callee-saved 寄存器（ra/sp/s0-s11） |
 
 ### 未完成的模块
 
@@ -160,7 +159,7 @@ Tick #3 @ mtime=0xb54e
 |------|------|
 | MMU / 页表 | ❌ 不存在 |
 | shutdown 机制 | ❌ 内核只能 timeout 终止 |
-| 多任务调度 | ❌ 阶段 6+ |
+| 抢占式调度 | ⚠️ 阶段 7 开发中 — sched_tick() 架构已就位，任务切换未正常工作 |
 | 系统调用 | ❌ 阶段 8+ |
 | S 模式 / 用户态 | ❌ 阶段 9+ |
 
@@ -261,6 +260,15 @@ Tick #3 @ mtime=0xb54e
 **理由**: 纯空闲链表方案需要在 mem_init() 中遍历 32702 页逐个链入，模拟器逐条指令执行导致初始化极慢（O(n) 遍历）。Bump allocator 初始化只需计算 `(heap_end - bump_ptr) / PAGE_SIZE`（O(1)），kfree 回收的页再链入空闲链表供后续复用
 **后果**: 首次分配走 bump（O(1)），释放后重新分配走 free_list（O(1)）。栈保护区（256KB）保证内核栈不被覆盖
 
+### Decision 13: 抢占式调度通过 trap frame 实现
+
+**决策**: `sched_tick(tf)` 通过直接修改 trap frame 中 callee-saved 寄存器和 mepc 来切换任务，而非调用 `switch_to`
+**理由**: 抢占式调度发生在中断上下文中，当前任务的完整寄存器状态已由 `trap_entry` 保存到 trap frame 中。`sched_tick` 只需将当前任务 callee-saved 状态提取到 `current->ctx`，将 `next->ctx` 写回 trap frame，陷阱返回后 `trap_entry` 的尾随恢复逻辑自然将新任务的寄存器加载到 CPU
+**后果**: 
+- sched_tick 不需要调用 switch_to（switch_to 用于协作式 yield 路径）
+- 新任务通过修改 mepc 为 `next->ctx.ra` 来指定 mret 的目标地址
+- 新创建的任务 mepc 指向 entry 函数，被抢占的任务 mepc 指向被中断的指令
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -276,6 +284,7 @@ Tick #3 @ mtime=0xb54e
 | ~~CLINT 定时器中断未接入 CPU~~ | 中 | ✅ 已实现（阶段 4） |
 | MiniOS 完成后无法主动退出（仅 timeout 终止） | 低 | 预期行为，后续需要 shutdown 机制 |
 | WFI 指令为 NOP 实现，无法真正暂停 CPU | 低 | 功能正确但效率低，不影响当前阶段 |
+| 抢占式调度 sched_tick 未触发任务切换 | 高 | 开发中 — 定时器中断正常触发，sched_tick 被调用，但 task_a/b 未获得 CPU |
 
 ## 八、当前文件结构
 
@@ -308,18 +317,21 @@ mycpu/
 │   ├── boot/
 │   │   └── start.S          (启动汇编：设栈、清零 BSS、跳转 kernel_main)
 │   ├── kernel/
-│   │   ├── kernel.c         (内核入口：UART 输出 + printk 演示 + ECALL trap 测试)
+│   │   ├── kernel.c         (内核入口：UART 输出 + printk 演示 + ECALL trap + 抢占式调度测试)
 │   │   ├── uart.h           (UART 驱动头文件)
 │   │   ├── uart.c           (UART 驱动：uart_putc/uart_puts)
 │   │   ├── printk.h         (内核日志头文件)
 │   │   ├── printk.c         (内核日志：%s/%d/%x/%lx/%c/%%，免除法)
-│   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + mret)
+│   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + mret + 传 trap frame 指针)
 │   │   ├── trap.h           (trap handler 头文件)
-│   │   ├── trap.c           (trap handler：读取 mcause/mepc/mtval，区分异常/中断)
+│   │   ├── trap.c           (trap handler：接收 trap frame，中断分支调用 sched_tick，trap_silent 模式)
 │   │   ├── timer.h          (定时器驱动头文件)
-│   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + tick 计数)
+│   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + mtimecmp 设置)
 │   │   ├── mem.h            (物理内存分配器头文件)
-│   │   └── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
+│   │   ├── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
+│   │   ├── task.h           (任务管理头文件：task_struct + context + sched_tick)
+│   │   ├── task.c           (任务管理：task_init/create/yield/schedule/sched_tick)
+│   │   └── switch.S         (上下文切换汇编：switch_to 保存/恢复 callee-saved 寄存器)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/
@@ -339,13 +351,13 @@ mycpu/
     └── googletest/
 ```
 
-## 九、下一步行动
+# 九、下一步行动
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
-| P0 | 任务结构与协作式调度 | 阶段 6 |
-| P0 | 上下文切换汇编 (switch.S) | 阶段 6 |
-| P1 | 抢占式调度（基于定时器中断） | 阶段 7 |
+| P0 | 调试抢占式调度 sched_tick：任务切换未生效 | 阶段 7 |
+| P1 | 系统调用框架（ecall + 系统调用号分发） | 阶段 8 |
+| P1 | S 模式与用户态雏形 | 阶段 9 |
 | P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
 | P2 | 完善 shutdown 机制（通过 sifive_test 或自定义 halt） | 未来阶段 |
 
@@ -371,3 +383,7 @@ mycpu/
 18. **`extern char` 声明获取链接脚本符号地址**：裸机 C 代码通过 `extern char _kernel_end;` 和 `&_kernel_end` 获取链接脚本定义的符号地址，这是获取内核结束地址的标准做法。
 19. **页对齐的向上/向下取整**：`align_up(addr, 4096)` = `(addr + 4095) & ~4095`，`align_down(addr, 4096)` = `addr & ~4095`。这是内存管理的基础工具。
 20. **print_hex 自带前缀导致格式串冗余**：`print_hex()` 内部已输出 `0x`，格式串不应再写 `0x`，否则产生 `0x0x`。
+21. **Callee-saved vs Caller-saved 是上下文切换的核心**：switch_to 只保存 callee-saved 寄存器 (ra/sp/s0-s11)；caller-saved (t0-t6/a0-a7) 由编译器在 yield() 函数调用的栈帧中自动保存/恢复。
+22. **新任务通过伪造 ra 来"启动"**：`ctx.ra = entry` 使 `switch_to` 的 `ret` 直接跳转到任务入口，这是经典的内核任务初始化技巧。
+23. **协作式 vs 抢占式使用不同的上下文切换路径**：协作式 yield → switch_to（C 调用汇编，保存/恢复 callee-saved）；抢占式 sched_tick → 直接修改 trap frame + mepc（利用硬件自动保存的所有寄存器）。
+24. **trap frame 布局是汇编与 C 之间的 ABI 契约**：trap.S 按固定偏移保存 32 个寄存器到栈上 256B 区域，trap.c 中的 trap_handler(tf) 和 sched_tick(tf) 通过同样的偏移读写 callee-saved 寄存器。这是组装接口设计的关键。`mv a0, sp` 将 trap frame 基址作为第一个参数传入。

@@ -42,7 +42,8 @@ trap_entry:
     sd x30,240(sp)   # t5
     sd x31,248(sp)   # t6
 
-    # 调用 C 语言 trap 处理函数
+    # 调用 C 语言 trap 处理函数，传递 trap frame 基址
+    mv a0, sp
     call trap_handler
 
     # 恢复所有寄存器（sp 必须最后恢复）

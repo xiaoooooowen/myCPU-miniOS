@@ -5,6 +5,277 @@
 
 ***
 
+## 2026-06-03 — 阶段 7：抢占式调度（开发中）
+
+### 背景
+
+阶段 6 实现了协作式调度（yield 主动让出）。阶段 7 的目标是让定时器中断自动触发任务切换，任务无需显式调用 yield()。核心挑战：中断上下文中的上下文切换与协作文切换的路径不同。
+
+### 修改清单
+
+#### 1. trap.S — 传递 trap frame 基址给 C handler
+
+**文件**：[os/kernel/trap.S](file:///home/xiaowen/projects/mycpu/os/kernel/trap.S)
+
+**关键修改**：在 `call trap_handler` 前新增 `mv a0, sp`，将 trap frame 基址作为第一个参数传递给 `trap_handler(uint64_t *tf)`。
+
+**设计意图**：trap frame 保存了被中断任务的完整寄存器状态（32 × 8B = 256B）。`sched_tick(tf)` 需要读写 trap frame 中的 callee-saved 寄存器来完成任务上下文交换。
+
+#### 2. trap.h/trap.c — 增强 trap handler
+
+**文件**：[os/kernel/trap.h](file:///home/xiaowen/projects/mycpu/os/kernel/trap.h)、[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**修改**：
+- `trap_handler` 签名改为 `void trap_handler(uint64_t *tf)`
+- 定时器中断（irq_code=7）分支新增 `sched_tick(tf)` 调用
+- 新增 `trap_silent` 静态变量和 `trap_set_silent(int)` setter：抢占式调度阶段减少 "=== TRAP ===" 输出的噪音
+
+#### 3. timer.c — 精简 timer_handle
+
+**文件**：[os/kernel/timer.c](file:///home/xiaowen/projects/mycpu/os/kernel/timer.c)
+
+**修改**：`timer_handle()` 移除 printk 输出，仅保留 `tick_count++` 和 `*mtimecmp = *mtime + TIMER_INTERVAL`。抢占式调度下每次 tick 都触发一次上下文切换，打印 tick 信息会产生海量输出。
+
+#### 4. task.h/task.c — sched_tick 抢占式调度入口
+
+**文件**：[os/kernel/task.h](file:///home/xiaowen/projects/mycpu/os/kernel/task.h)、[os/kernel/task.c](file:///home/xiaowen/projects/mycpu/os/kernel/task.c)
+
+**新增 `sched_tick(uint64_t *tf)` 函数**：
+
+核心逻辑：
+1. 从 trap frame 提取当前任务的 callee-saved 寄存器 → 保存到 `current->ctx`
+2. `ra = trap_epc_read()`（被中断指令地址）
+3. `sp = tf[2]`（进入 trap 前的原始 sp）
+4. `s0-s11` 从 tf[8-9, 18-27]（trap frame 固定偏移）
+5. 调用 `schedule()` 选下一个任务
+6. 将 `next->ctx` 写回 trap frame + `trap_epc_write(next->ctx.ra)`
+7. trap_entry 尾随恢复 + mret 自然跳转到新任务
+
+**设计决策**：sched_tick 不调用 `switch_to`。`switch_to` 是给 yield() 用的协作式路径（C 调用汇编），而抢占式路径利用硬件已保存的 trap frame，直接修改 frame 内容即可。
+
+**trap frame 偏移表**（sched_tick 使用）：
+| 偏移 | 寄存器 | 用途 |
+|------|--------|------|
+| tf[2 ] = sp+16 | sp_original | 进入 trap 前的栈指针 |
+| tf[8 ] = sp+64 | s0/fp | 帧指针 |
+| tf[9 ] = sp+72 | s1 | |
+| tf[18] = sp+144 | s2 | |
+| tf[19] = sp+152 | s3 | |
+| tf[20] = sp+160 | s4 | |
+| tf[21] = sp+168 | s5 | |
+| tf[22] = sp+176 | s6 | |
+| tf[23] = sp+184 | s7 | |
+| tf[24] = sp+192 | s8 | |
+| tf[25] = sp+200 | s9 | |
+| tf[26] = sp+208 | s10 | |
+| tf[27] = sp+216 | s11 | |
+
+#### 5. kernel.c — Phase 7 抢占式调度测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：
+- 任务函数 `task_a`/`task_b` 移除 `yield()` 调用（纯循环 + printk + delay），完全依赖定时器中断切换
+- kernel_main：`csr_set(mstatus, MSTATUS_MIE)` 开全局中断 → `timer_init()` → `trap_set_silent(1)` 静默 trap 输出 → idle 循环不含 yield
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### MiniOS 运行结果（当前）
+
+```
+--- Phase 7: Preemptive Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x80000040)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x800000a4)
+Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
+[Idle ] count=0
+[Idle ] count=1
+[Idle ] count=2
+```
+
+**已知问题**：定时器中断正常触发，sched_tick 被调用，但 task_a 和 task_b 未获得 CPU。仅 idle 任务持续运行。需要进一步调试 sched_tick 中 trap frame 修改的正确性。
+
+### 经验笔记
+
+1. **抢占式和协作式上下文切换路径不同**：协作式（yield）用 `switch_to` 直接保存/恢复 callee-saved 寄存器；抢占式（sched_tick）通过修改 trap frame + mepc 间接完成，利用硬件已保存的完整寄存器状态。这是两种不同的调度路径，不能混用。
+
+2. **trap frame 是中断上下文和任务切换之间的桥梁**：`trap_entry` 将寄存器保存到栈上 → `trap_handler` 解释中断原因 → `sched_tick` 读/写 trap frame → `trap_entry` 尾随恢复 → `mret` 跳转到新任务。整个路径中 trap frame 是数据的"中转站"。
+
+3. **trap_silent 是务实的工程选择**：抢占式调度下每次定时器中断都输出 "=== TRAP ===" 会产生数百行无用输出，淹没真正的任务输出。`trap_set_silent(1)` 在测试阶段减少噪音，调试时可关闭。
+
+4. **`mv a0, sp` 是汇编层和 C 层之间的 ABI**：RISC-V calling convention 规定 a0 为第一个参数。trap.S 将 sp 放入 a0 后 call trap_handler，C 层 `trap_handler(uint64_t *tf)` 就拿 tf == sp == trap frame 基址。这是最简单的跨语言接口。
+
+5. **mepc 在抢占式调度中承担双重角色**：对于新任务，mepc 设为 entry 地址（首次"返回"即跳转到任务入口）；对于被抢占的老任务，mepc 设为被中断的指令地址（恢复执行）。控制 mepc 就是控制 CPU 下一步去哪里。
+
+***
+
+## 2026-06-03 — 阶段 6：任务结构与协作式调度
+
+### 背景
+
+阶段 5 建立了物理页分配器，为每个任务分配独立内核栈提供了内存基础。阶段 6 的目标是实现最小任务抽象和协作式调度，为后续阶段 7（抢占式调度）奠定基础。
+
+核心设计决策：先做**协作式调度**（任务主动 yield）而非抢占式。抢占式调度依赖稳定的定时器中断和上下文保存机制，复杂度更高；协作式调度更简单，适合作为第一版任务系统。
+
+### 修改清单
+
+#### 1. 创建 os/kernel/task.h — 任务结构体定义
+
+**新增文件**：[os/kernel/task.h](file:///home/xiaowen/projects/mycpu/os/kernel/task.h)
+
+**核心类型**：
+
+```c
+struct context {
+    uint64_t ra;    /* 返回地址 */
+    uint64_t sp;    /* 栈指针   */
+    uint64_t s0;    /* 帧指针   */
+    uint64_t s1;    /* 保存寄存器 s1  */
+    uint64_t s2;    /* 保存寄存器 s2  (x18)  */
+    ...             /* ... s3-s11 */
+};
+
+struct task {
+    struct context ctx;   /* callee-saved 上下文 (112 字节) */
+    void          *stack; /* 内核栈基址 (kalloc 分配的页) */
+    int            state; /* TASK_UNUSED/READY/RUNNING     */
+    const char    *name;  /* 调试名称                      */
+};
+```
+
+**设计要点**：
+- `struct context` 只保存 **callee-saved** 寄存器（ra, sp, s0-s11），共 14 个 × 8 字节 = 112 字节
+- Caller-saved 寄存器（t0-t6, a0-a7）由 C 编译器在 `yield()` 函数调用的栈帧中自动保存/恢复
+- `sizeof(struct task)` = 112 + 8 + 4 + 4(padding) + 8 = 136 字节
+
+#### 2. 创建 os/kernel/switch.S — 上下文切换汇编
+
+**新增文件**：[os/kernel/switch.S](file:///home/xiaowen/projects/mycpu/os/kernel/switch.S)
+
+```asm
+switch_to:
+    # 保存当前上下文到 prev (a0)
+    sd ra,   0(a0)
+    sd sp,   8(a0)
+    sd s0,  16(a0)
+    ...            # s1-s11
+    # 从 next (a1) 恢复上下文
+    ld ra,   0(a1)
+    ld sp,   8(a1)
+    ...            # s0-s11
+    ret            # 返回到 next->ra (新任务的入口或 yield 返回点)
+```
+
+**关键设计**：
+- `switch_to` 的 `ret` 返回到 `next->ra`：对于新任务指向 `entry` 函数，对于已运行过的任务指向 `yield()` 中 `switch_to` 调用后的下一条指令
+- 使用 `a1`（而非 `sp`）作为基址加载寄存器，避免 `ld sp, 8(a1)` 改变 sp 后影响后续加载
+
+#### 3. 创建 os/kernel/task.c — 任务管理与调度
+
+**新增文件**：[os/kernel/task.c](file:///home/xiaowen/projects/mycpu/os/kernel/task.c)
+
+**任务表**：`static struct task tasks[MAX_TASKS]` — 最多 8 个任务
+
+**task_init() 逻辑**：
+- 初始化所有任务槽为 `TASK_UNUSED`
+- 将 task[0] 设为当前运行的 idle 任务（`TASK_RUNNING`）
+- `current = &tasks[0]`, `task_count = 1`
+
+**task_create(func, name) 逻辑**：
+1. 找空闲槽位 → `kalloc()` 分配内核栈页 → 初始化 context
+2. `ctx.ra = entry`（switch_to ret 时跳转到任务入口）
+3. `ctx.sp = stack + PAGE_SIZE`（栈从高地址向低地址增长）
+4. 所有 s0-s11 清零
+
+**schedule() 逻辑**：简单轮询（round-robin）
+- 从 `current` 的下一个槽位开始遍历
+- 返回第一个 `TASK_READY` 或 `TASK_RUNNING` 状态的任务
+
+**yield() 逻辑**：
+1. 检查 `current != NULL && task_count > 1`
+2. `prev = current`, `next = schedule()`
+3. 若 `next != NULL && next != prev`：将 prev 状态改为 READY，next 改为 RUNNING，`current = next`
+4. 调用 `switch_to(&prev->ctx, &next->ctx)` 执行上下文切换
+
+#### 4. 更新 os/kernel/kernel.c — Phase 6 测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**新增三个测试任务**：
+- `task_a()` — 循环打印 `[Task A] count=N` → delay → yield
+- `task_b()` — 循环打印 `[Task B] count=N` → delay → yield
+- idle（kernel_main 主循环）— 打印 `[Idle ] count=N` → delay → yield
+
+**kernel_main 配置**：
+```c
+mem_init();                          // 为任务栈分配做准备
+task_init();                         // 初始化任务子系统
+task_create(task_a, "task_a");       // 创建任务 A (tid=1)
+task_create(task_b, "task_b");       // 创建任务 B (tid=2)
+while (1) { /* idle 任务 yield 循环 */ }
+```
+
+#### 5. 更新 os/Makefile
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- KERNEL_SRCS 新增 `kernel/task.c`
+- KERNEL_ASMS 新增 `kernel/switch.S`
+- OBJS 新增 `task.o` 和 `switch.o`
+- 新增对应的编译规则
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 6: Cooperative Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x80000040)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x800000a8)
+[Idle ] count=0
+[Task A] count=0
+[Task B] count=0
+[Idle ] count=1
+[Task A] count=1
+[Task B] count=1
+[Idle ] count=2
+[Task A] count=2
+[Task B] count=2
+... (交替运行，按 Idle → A → B 顺序轮转)
+```
+
+验收标准全部满足：
+- 两个任务可以交替运行（A/B/Idle 三轮转）
+- 每个任务拥有独立栈（kalloc 分配，不同页地址）
+- 上下文切换后寄存器状态不混乱（count 计数器连续递增）
+- UART 输出顺序可观察（严格 Idle → A → B → Idle → A → B）
+
+### 经验笔记
+
+1. **Callee-saved vs Caller-saved 的理解是上下文切换的核心**：RISC-V calling convention 中，`ra, sp, s0-s11` 是 callee-saved（被调用者保证不变），`t0-t6, a0-a7` 是 caller-saved（调用者自己保存）。`switch_to` 只需要保存 callee-saved 寄存器——因为它本身就是一个"被调用的函数"。Caller-saved 寄存器由 `yield()` 的编译器生成的函数序言/尾声自动在栈帧中保存。
+
+2. **新任务通过伪造 ra 来"启动"**：新任务从未运行过，没有真正的"返回地址"。通过设置 `ctx.ra = entry`，`switch_to` 的 `ret` 指令就会直接跳转到任务入口函数。这是初始化任务上下文的经典技巧。
+
+3. **`switch_to` 中 `ld sp` 不影响后续加载**：因为加载使用 `a1` 作为基址而非 `sp`，所以即使 `ld sp, 8(a1)` 改变了栈指针，后续的 `ld s0, 16(a1)` 等仍然从正确的地址（next->context 的内存区域）加载数据。
+
+4. **idle 任务不需要单独分配栈**：task[0]（idle）使用启动阶段 `start.S` 设置的 `_stack_top` 栈，不需要 `kalloc` 额外分配。它的 `stack` 字段设为 `NULL`，切换回来时 sp 恢复为之前保存在 context 中的值（指向 `_stack_top` 区域）。
+
+5. **协作式调度不需要关中断**：当前阶段任务通过 `yield()` 自愿让出 CPU，不存在竞态条件。阶段 7（抢占式调度）需要在 `timer_handle()` 中触发 `schedule()`，届时需要 `local_irq_save/restore` 保护临界区。
+
+***
+
 ## 2026-06-03 — 阶段 4：机器定时器与 CLINT
 
 ### 背景

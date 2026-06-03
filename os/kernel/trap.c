@@ -1,46 +1,67 @@
 #include "trap.h"
 #include "printk.h"
 #include "timer.h"
+#include "task.h"
 #include "../include/csr.h"
 
-void trap_handler(void) {
+/* 静默模式：抢占式调度阶段减少 trap 输出噪音 */
+static int trap_silent = 0;
+
+void trap_handler(uint64_t *tf) {
     uint64_t cause = trap_cause_read();
     uint64_t epc   = trap_epc_read();
     uint64_t tval  = trap_tval_read();
-
-    printk("=== TRAP ===\n");
-    printk("mcause: %lx\n", cause);
-    printk("mepc:   %lx\n", epc);
-    printk("mtval:  %lx\n", tval);
+    (void)tf;  /* 作为 trap frame 基址传递给 sched_tick */
 
     /* 判断是异常还是中断 */
     if (cause & (1ULL << 63)) {
-        /* 最高位为 1 表示中断 */
+        /* 中断 */
         uint64_t irq_code = cause & 0x7fffffffffffffffULL;
-        printk("Type: Interrupt (%lx)\n", irq_code);
+
+        if (!trap_silent) {
+            printk("=== TRAP ===\n");
+            printk("mcause: %lx\n", cause);
+            printk("mepc:   %lx\n", epc);
+            printk("mtval:  %lx\n", tval);
+        }
 
         switch (irq_code) {
             case 7:
-                printk("  -> Machine timer interrupt\n");
+                if (!trap_silent) {
+                    printk("Type: Interrupt (%lx)\n", cause);
+                    printk("  -> Machine timer interrupt\n");
+                }
                 timer_handle();
-                break;
+                sched_tick(tf);
+                if (!trap_silent) {
+                    printk("=== TRAP END ===\n");
+                }
+                return;
             case 3:
+                printk("Type: Interrupt (%lx)\n", cause);
                 printk("  -> Machine software interrupt\n");
                 break;
             case 11:
+                printk("Type: Interrupt (%lx)\n", cause);
                 printk("  -> Machine external interrupt\n");
                 break;
             default:
+                printk("Type: Interrupt (%lx)\n", cause);
                 printk("  -> Unknown interrupt\n");
                 break;
         }
 
-        /* 中断：mret 返回被中断的指令，不推进 mepc */
-        printk("=== TRAP END ===\n");
+        if (!trap_silent) {
+            printk("=== TRAP END ===\n");
+        }
         return;
     }
 
     /* 异常 */
+    printk("=== TRAP ===\n");
+    printk("mcause: %lx\n", cause);
+    printk("mepc:   %lx\n", epc);
+    printk("mtval:  %lx\n", tval);
     printk("Type: Exception (%lx)\n", cause);
     switch (cause) {
         case 10:
@@ -67,4 +88,9 @@ void trap_handler(void) {
 
     /* 异常：推进 mepc 跳过触发异常的指令 */
     trap_epc_write(epc + 4);
+}
+
+/* 进入抢占式调度阶段后，静默定时器中断的 trap 输出 */
+void trap_set_silent(int silent) {
+    trap_silent = silent;
 }
