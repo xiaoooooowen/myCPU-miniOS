@@ -5,6 +5,311 @@
 
 ***
 
+## 2026-06-02 — 阶段 3：Trap 入口与异常处理
+
+### 背景
+
+阶段 2 完成了 UART 输出和 printk 内核日志，MiniOS 已经能通过串口输出信息。但此时模拟器的 `executeECALL` 只抛异常（`throw Exception(EnvironmentCallFromMMode, inst)`），没有 trap 处理路径。阶段 3 的目标是：
+
+1. 建立从硬件异常到内核 handler 的完整路径
+2. 让 MiniOS 通过 `ecall` 主动触发异常并进入 trap handler
+3. 在 trap handler 中读取 mcause/mepc/mtval 并通过 printk 输出
+4. 通过 mret 正确返回到异常发生后的下一条指令
+
+### 修改清单
+
+#### 1. 创建 `os/kernel/trap.S` — trap 入口汇编
+
+**新增文件**：[os/kernel/trap.S](file:///home/xiaowen/projects/mycpu/os/kernel/trap.S)
+
+**内容**：
+- `trap_entry` 是 mtvec 指向的入口点
+- 分配 256 字节栈帧（32 个寄存器 × 8 字节）
+- 保存全部通用寄存器（x0 硬连线零跳过）
+- 调用 C 函数 `trap_handler`
+- 恢复所有寄存器后执行 `mret`
+
+**遇到的工程问题 — sp 恢复顺序 bug**：
+
+| 项 | 详情 |
+|------|------|
+| 症状 | trap handler 执行后，恢复寄存器时触发 `LoadAccessFault` (Fatal) |
+| 根因 | 恢复顺序中 `ld sp, 16(sp)` 在恢复其他寄存器之前执行，sp 值改变后所有后续 `ld` 从错误地址加载 |
+| 修复 | sp 必须是最后一条 `ld` 指令 |
+
+**遇到的工程问题 — t0 被借用后的值污染**：
+
+| 项 | 详情 |
+|------|------|
+| 根因 | 进入 trap 时 t0 保存内核正在使用的值，但 trap 帧必须用 t0 计算原始 sp（`addi t0, sp, 256`），导致覆盖 t0 原值 |
+| 修复 | 三步操作：先 `sd t0, 40(sp)` 保存原始值 → 借用 t0 计算 sp 并 `sd` → `ld t0, 40(sp)` 恢复 t0 原始值 |
+
+#### 2. 创建 `os/kernel/trap.h` 和 `os/kernel/trap.c`
+
+**新增文件**：
+- [os/kernel/trap.h](file:///home/xiaowen/projects/mycpu/os/kernel/trap.h) — trap handler 头文件
+- [os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c) — trap handler C 实现
+
+**trap_handler 逻辑**：
+1. 通过 `trap_cause_read()` / `trap_epc_read()` / `trap_tval_read()` 读取 CSR
+2. 通过 printk 输出 mcause/mepc/mtval 值
+3. 判断最高位区分中断 vs 异常
+4. 用 switch-case 解码常见异常类型（ECALL/EBREAK/IllegalInstruction）
+5. **关键**：执行 `trap_epc_write(epc + 4)` 推进 mepc，避免 mret 回到同一 ecall
+
+**遇到的工程问题 — mcause 值为 10 而非 11**：
+
+最初在 switch-case 中用 `case 11` 匹配 M-mode ECALL，但实际 mcause=10（0xa）。`EnvironmentCallFromMMode` 在 RISC-V 特权规范中 encode 为 10，不是 11。修正后正确输出 `-> Environment call from M-mode`。
+
+#### 3. 修改 `os/boot/start.S` — 设置 mtvec
+
+**文件**：[os/boot/start.S](file:///home/xiaowen/projects/mycpu/os/boot/start.S)
+
+**修改**：在 BSS 清零之前添加：
+```asm
+la t0, trap_entry
+csrw mtvec, t0
+```
+将 mtvec 指向 trap_entry，使得 CPU 在发生异常时跳转到 trap 入口。
+
+#### 4. 修改 `os/kernel/kernel.c` — 触发测试异常
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：在 printk 演示之后添加：
+```c
+printk("--- Phase 3: Trap Test ---\n");
+printk("Triggering ECALL to test trap handler...\n");
+__asm__ volatile("ecall");
+printk("Returned from trap handler!\n");
+printk("Trap round-trip successful!\n");
+```
+
+验证 trap 完整路径：ecall → trap_entry → trap_handler → mret → 回到 ecall 下一条指令。
+
+#### 5. 修复 `os/include/csr.h` — 宏展开缺陷
+
+**文件**：[os/include/csr.h](file:///home/xiaowen/projects/mycpu/os/include/csr.h)
+
+**问题**：`trap_cause_read()` 展开为 `csr_read(TRAP_CAUSE)`，再展开为 `csr_read(mcause)`。但 C 预处理器的 `#` 字符串化运算符不会展开宏参数，`#csr` 直接将参数名（而非其展开值）转为字符串，导致内联汇编中出现 `csrr t0, TRAP_CAUSE` 而非 `csrr t0, mcause`。
+
+**修复**：添加间接宏层：
+```c
+#define _csr_read(csr)  ({ uint64_t _v; __asm__ volatile("csrr %0, " #csr : "=r"(_v)); _v; })
+#define csr_read(csr)   _csr_read(csr)
+```
+外层 `csr_read(TRAP_CAUSE)` 先将 `TRAP_CAUSE` 展开为 `mcause`，再调用 `_csr_read(mcause)`，此时 `#csr` 得到正确的 `mcause`。
+
+`csr_write`/`csr_set`/`csr_clear` 同样修复。
+
+#### 6. 更新 `os/Makefile`
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- 新增 `KERNEL_ASMS = kernel/trap.S`
+- 新增 `trap_handler.o`（C 编译）和 `trap_entry.o`（汇编编译）目标
+- OBJS 从 4 个扩展到 6 个（start.o + kernel.o + uart.o + printk.o + trap_handler.o + trap_entry.o）
+
+### 构建验证
+
+```bash
+cd os && make clean && make    # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 3: Trap Test ---
+Triggering ECALL to test trap handler...
+=== TRAP HANDLER ===
+mcause: 0xa
+mepc:   0x80000120
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+=== TRAP END ===
+Returned from trap handler!
+Trap round-trip successful!
+```
+
+- ECALL 触发 trap，mcause=0xa（M-mode 环境调用）
+- mepc 指向 ECALL 指令地址，mtval=0x73（ECALL 的 opcode）
+- trap handler 正确解码异常类型
+- mepc+4 后 mret 返回，执行 "Returned from trap handler!"
+- 无 Fatal 异常，内核正常运行
+
+### 经验笔记
+
+1. **汇编寄存器保存/恢复顺序至关重要**：sp 改变后所有基于 sp 的偏移都错。sp 必须最后恢复。借用临时寄存器时需先保存其原始值再借用，借完后立即恢复。
+
+2. **mret 返回地址决定是否死循环**：mret 将 PC 设为 mepc。如果不主动推进 mepc（+4），mret 回到同一条 ECALL 指令，形成无限循环。注意中断场景下 mepc 不需要推进（中断在指令边界采样）。
+
+3. **C 预处理器 `#` 运算符不展开参数**：`#csr` 直接字符串化原始参数名，不会先展开宏别名。需要两层宏定义来让参数先展开。这是 C 预处理的经典陷阱。
+
+4. **RISC-V ECALL cause 编码**：ECALL 在 M-mode 的 cause 是 10（0xa），而非直觉的 11。需要以 RISC-V 特权规范为准。
+
+5. **trap handler 不需要自己保存 CSR**：mtvec/mepc/mcause/mtval/mstatus 的保存和恢复由模拟器 `Cpu::handle_exception` 和硬件 mret 自动完成。trap handler 只负责读取和决策。
+
+***
+
+## 2026-06-02 — 阶段 2：UART 输出与内核日志
+
+### 背景
+
+阶段 1 已经让 MiniOS 在模拟器上成功启动并输出 "MiniOS booting..." 和 "Hello from kernel!"。但 UART 输出逻辑全部内嵌在 `kernel.c` 中，没有模块化。阶段 2 的目标是：
+
+1. 将 UART 驱动从内核中分离为独立模块
+2. 实现最小 `printk`，支持格式化输出
+3. 让内核日志系统可复用，为后续阶段（trap handler 日志、定时器日志等）打基础
+
+### 修改清单
+
+#### 1. 创建 `os/kernel/uart.h` 和 `os/kernel/uart.c`
+
+**新增文件**：
+- [os/kernel/uart.h](file:///home/xiaowen/projects/mycpu/os/kernel/uart.h) — UART 驱动头文件
+- [os/kernel/uart.c](file:///home/xiaowen/projects/mycpu/os/kernel/uart.c) — UART 驱动实现
+
+**内容**：
+- `uart_init()` — 初始化（当前为空，预留）
+- `uart_putc(char c)` — 轮询等待 LSR THRE 位，然后写入 THR
+- `uart_puts(const char* s)` — 字符串输出
+
+**设计决策**：UART 寄存器地址常量和掩码从头文件定义移到 uart.c 内部（封装），头文件只暴露 API。
+
+#### 2. 创建 `os/kernel/printk.h` 和 `os/kernel/printk.c`
+
+**新增文件**：
+- [os/kernel/printk.h](file:///home/xiaowen/projects/mycpu/os/kernel/printk.h) — 内核日志头文件
+- [os/kernel/printk.c](file:///home/xiaowen/projects/mycpu/os/kernel/printk.c) — 内核日志实现
+
+**支持的格式说明符**：
+
+| 格式 | 类型 | 示例 |
+|------|------|------|
+| `%s` | `const char*` | `printk("hello %s", "world")` |
+| `%d` | `int`（支持负数） | `printk("val=%d", -42)` |
+| `%x` | `uint32_t` | `printk("addr=%x", 0xDEAD)` |
+| `%lx` | `uint64_t` | `printk("ptr=%lx", 0x80000000)` |
+| `%c` | `char` | `printk("letter=%c", 'A')` |
+| `%%` | 字面量 `%` | `printk("100%%")` |
+
+**遇到的工程问题**：`print_dec` 的 `uint32_t` 除法在 RV64 上仍触发 `__umoddi3`/`__udivdi3` 未定义符号。
+
+**根因**：GCC 对 RV64 的 32 位除法和取模会生成 64 位辅助函数调用。
+
+**解决**：用查表减法替代除法和取模：
+```c
+static const uint32_t powers[] = {
+    1000000000, 100000000, 10000000, 1000000,
+    100000, 10000, 1000, 100, 10, 1
+};
+for (int i = 0; i < 10; i++) {
+    char digit = '0';
+    while (val >= powers[i]) { val -= powers[i]; digit++; }
+    // output digit
+}
+```
+
+#### 3. 重构 `os/kernel/kernel.c`
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：
+- 移除内嵌的 `uart_putc`/`uart_puts`/`print_hex` 实现
+- 改为 `#include "uart.h"` 和 `#include "printk.h"`
+- 使用 `printk` 输出所有格式化日志，展示所有格式说明符
+
+**验证输出**（153 字符）：
+```
+MiniOS booting...
+Hello from kernel!
+--- Kernel Log Demo ---
+String: hello world
+Decimal: -42
+Hex: 0xdeadbeef
+Long hex: 0x80000000
+Char: Z
+Percent: 100%
+```
+
+#### 4. 更新 `os/Makefile`
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- 新增 `uart.o` 和 `printk.o` 编译目标
+- OBJS 从 2 个扩展到 4 个（start.o + kernel.o + uart.o + printk.o）
+
+#### 5. 修复 2 个指令分派 Bug（在模拟器中）
+
+**文件**：[src/instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+这是阶段 2 的意外收获。printk 格式化代码触发了编译器生成的 ADDIW 和 SRAI 指令，暴露出两个分派表 bug：
+
+**Bug A — ADDIW 和 SLLIW 的 funct7 误匹配**：
+
+| 项 | 详情 |
+|------|------|
+| 症状 | `printk("%d\n", -42)` 触发 `IllegalInstruction: ADDIW (0xf9d7869b, funct7=0x7c)` |
+| 根因 | ADDIW 和 SLLIW 被放在 `instruction2Map`（需 funct7 匹配），但它们的 bits[31:25] 是立即数高位而非 funct7，只有立即数为 0 时才能匹配 `funct7=0x00` |
+| 修复 | 将 ADDIW(opcode=0x1b, funct3=0x0) 和 SLLIW(opcode=0x1b, funct3=0x1) 移到 `instructionMap`（只需 opcode+funct3 匹配） |
+
+**Bug B — SRLI/SRAI 的 funct7 宽度错误**：
+
+| 项 | 详情 |
+|------|------|
+| 症状 | `printk(...)` 中移位操作触发 `IllegalInstruction: SRLI (opcode=0x13, funct3=0x5, funct7=0x1)` |
+| 根因 | RV64 的 SRLI/SRAI 使用 6 位 shamt（funct6），bit[25] 是 shamt[5] 而非 funct7[0]。原分发表用 funct7（bits[31:25]）匹配 `0x00`/`0x20`，但非零 shamt 的高位置于 bit[25] 会改变 funct7 值 |
+| 修复 | (a) SRAI 的 funct6 改为 `0x10`（因为 `0x20 << 1 = 0x40`，截取位[31:26] 后为 `0x10`） (b) 增加 funct6 回退查找：当 `(opcode, funct3, funct7)` 未命中时，用 `funct6 = (inst >> 26) & 0x3f` 再查一次 |
+
+### 构建验证
+
+```bash
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+cd os && make                        # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+Total Test time (real) = 77.08 sec
+```
+
+### MiniOS 运行结果
+
+模拟器运行 MiniOS，通过 UART 输出 153 个字符，全部 printk 格式说明符正常：
+- `%s` → "hello world"
+- `%d` → "-42"（负数正常）
+- `%x` → "0xdeadbeef"
+- `%lx` → "0x80000000"
+- `%c` → "Z"
+- `%%` → "%"
+- 非法 `%z` → 原样输出 "%z"，不崩溃
+
+### 经验笔记
+
+1. **裸机环境无 libgcc**：`-nostdlib` 意味着没有 `__udivdi3`/`__umoddi3` 等编译器辅助函数。在 RV64 上即使操作 `uint32_t`，GCC 也可能生成 64 位除法辅助函数调用。免除法算法（查表减法）是安全选择。
+
+2. **RISC-V funct7 不总是 funct7**：I-type 指令的 bits[31:25] 在移位指令中是 funct7，在立即数指令中是 imm[11:5]。ADDIW 的 bits[31:25] 是立即数高位，不能当 funct7 用于分派。
+
+3. **RV64 移位指令的 shamt 是 6 位**：SRLI/SRAI 的 shamt 使用 bits[25:20]（6 位），而非 RV32 的 bits[24:20]（5 位）。额外的 bit[25] 意味着 funct7 的有效区分位只剩 bits[31:26]（funct6）。指令分派需要用 funct6 而非 funct7。
+
+4. **printk 的默认行为不会崩溃**：遇到非法格式符（如 `%z`），输出来源原样 `%z`，不消费 va_arg。虽然参数被静默丢弃，但不会影响后续 printk 调用（每个调用有独立的 va_list）。
+
+5. **模块化先于功能积累**：将 UART 驱动和 printk 从 kernel.c 中分离，虽然增加了文件数，但为后续阶段（trap handler 日志、定时器日志）提供了可复用的基础设施。
+
+***
+
 ## 2026-05-29 — 阶段 0.5 全部完成 + 阶段 1 MiniOS 启动成功
 
 ### 背景

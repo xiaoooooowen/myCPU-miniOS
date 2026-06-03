@@ -907,6 +907,8 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
     {std::make_tuple(0x13, 0x4), executeXori},
     {std::make_tuple(0x13, 0x6), executeOri},
     {std::make_tuple(0x13, 0x7), executeAndi},
+    {std::make_tuple(0x1b, 0x0), executeADDIW},
+    {std::make_tuple(0x1b, 0x1), executeSLLIW},
     {std::make_tuple(0x19, 0x7), executeSb},
     {std::make_tuple(0x23, 0x0), executeStoreByte},
     {std::make_tuple(0x23, 0x1), executeStoreHalf},
@@ -941,7 +943,7 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
 
   std::unordered_map<std::tuple<uint32_t, uint32_t, uint32_t>, ExecuteFunction> instruction2Map = {
     {std::make_tuple(0x13, 0x5, 0x00), executeSrli},
-    {std::make_tuple(0x13, 0x5, 0x20), executeSrai},
+    {std::make_tuple(0x13, 0x5, 0x10), executeSrai},
     {std::make_tuple(0x33, 0x0, 0x00), executeAdd},
     {std::make_tuple(0x33, 0x0, 0x20), executeSUB},
     {std::make_tuple(0x33, 0x1, 0x00), executeSll},
@@ -952,8 +954,6 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
     {std::make_tuple(0x33, 0x5, 0x20), executeSra},
     {std::make_tuple(0x33, 0x6, 0x00), executeOr},
     {std::make_tuple(0x33, 0x7, 0x00), executeAnd},
-    {std::make_tuple(0x1b, 0x0, 0x00), executeADDIW},
-    {std::make_tuple(0x1b, 0x1, 0x00), executeSLLIW},
     {std::make_tuple(0x1b, 0x5, 0x00), executeSRLIW},
     {std::make_tuple(0x1b, 0x5, 0x20), executeSRAIW},
     {std::make_tuple(0x3b, 0x0, 0x00), executeAddw},
@@ -970,6 +970,10 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
   };
 
   auto it1 = instruction2Map.find({opcode, funct3, funct7});
+  if (it1 == instruction2Map.end()) {
+    uint32_t funct6 = (inst >> 26) & 0x3f;
+    it1 = instruction2Map.find({opcode, funct3, funct6});
+  }
   LOG(INFO, "Executing srli or srai funct7: 0x" , std::hex, funct7 , std::dec);
   if (it1 != instruction2Map.end()) {
     auto result = it1->second(cpu, inst);

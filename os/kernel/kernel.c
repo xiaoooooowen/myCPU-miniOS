@@ -1,34 +1,30 @@
-#define UART_BASE 0x10000000
-#define UART_THR  0
-#define UART_LSR  5
-#define UART_LSR_TX_EMPTY (1 << 5)
-
-typedef unsigned char uint8_t;
-typedef unsigned int uint32_t;
-
-static volatile uint8_t* const uart = (volatile uint8_t*)UART_BASE;
-
-static void uart_putc(char c) {
-    while ((uart[UART_LSR] & UART_LSR_TX_EMPTY) == 0) { }
-    uart[UART_THR] = c;
-}
-
-static void uart_puts(const char* s) {
-    while (*s) {
-        uart_putc(*s++);
-    }
-}
-
-static void print_hex(uint32_t val) {
-    const char hex[] = "0123456789abcdef";
-    for (int i = 7; i >= 0; i--) {
-        uart_putc(hex[(val >> (i * 4)) & 0xf]);
-    }
-}
+#include "uart.h"
+#include "printk.h"
+#include "../include/csr.h"
 
 void kernel_main(void) {
-    uart_puts("MiniOS booting...\n");
-    uart_puts("Hello from kernel!\n");
+    uart_init();
+
+    printk("MiniOS booting...\n");
+    printk("Hello from kernel!\n");
+
+    printk("--- Kernel Log Demo ---\n");
+    printk("String: %s\n", "hello world");
+    printk("Decimal: %d\n", -42);
+    printk("Hex: %x\n", 0xDEADBEEF);
+    printk("Long hex: %lx\n", 0x80000000UL);
+    printk("Char: %c\n", 'Z');
+    printk("Percent: 100%%\n");
+
+    printk("--- Test: illegal format specifier ---\n");
+    printk("Illegal %%z: %z\n", 42);
+    printk("After illegal format\n");
+
+    printk("--- Phase 3: Trap Test ---\n");
+    printk("Triggering ECALL to test trap handler...\n");
+    __asm__ volatile("ecall");
+    printk("Returned from trap handler!\n");
+    printk("Trap round-trip successful!\n");
 
     while (1) { }
 }

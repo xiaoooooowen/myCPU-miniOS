@@ -74,20 +74,28 @@
  * 通用 CSR 访问宏（通过内联汇编）
  */
 
-#define csr_read(csr) ({                           \
+#define _csr_read(csr) ({                           \
     uint64_t _v;                                   \
     __asm__ volatile("csrr %0, " #csr : "=r"(_v)); \
     _v;                                            \
 })
 
-#define csr_write(csr, value)                      \
+#define csr_read(csr) _csr_read(csr)
+
+#define _csr_write(csr, value)                     \
     __asm__ volatile("csrw " #csr ", %0" :: "r"((uint64_t)(value)))
 
-#define csr_set(csr, mask)                         \
+#define csr_write(csr, value) _csr_write(csr, value)
+
+#define _csr_set(csr, mask)                        \
     __asm__ volatile("csrs " #csr ", %0" :: "r"((uint64_t)(mask)))
 
-#define csr_clear(csr, mask)                       \
+#define csr_set(csr, mask) _csr_set(csr, mask)
+
+#define _csr_clear(csr, mask)                      \
     __asm__ volatile("csrc " #csr ", %0" :: "r"((uint64_t)(mask)))
+
+#define csr_clear(csr, mask) _csr_clear(csr, mask)
 
 /*
  * 统一的 Trap CSR 访问接口

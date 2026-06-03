@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-05-29
-> 冻结版本：阶段 0.5 全部完成 + 阶段 1 全部完成
+> 冻结时间：2026-06-02
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 全部完成
 
 ## 一、环境信息
 
@@ -67,19 +67,42 @@ cd os && make
 ### MiniOS 运行验证
 
 ```bash
-timeout 2 ./build_wsl/cemu os/build/kernel.bin 2>/dev/null \
-  | grep "at UART" \
-  | python3 -c "import sys; sys.stdout.write(''.join(chr(int(x.strip(),16)) for x in sys.stdin.readlines()))"
+timeout 2 ./build_wsl/cemu os/build/kernel.bin > /tmp/cemu_out.log 2>&1
+python3 -c "
+import re
+with open('/tmp/cemu_out.log') as f:
+    chars = [chr(int(m.group(1),16)) for line in f if (m := re.search(r'storing value ([0-9a-f]+) at UART', line))]
+print(''.join(chars))
+"
 ```
 
 **输出**：
 ```
 MiniOS booting...
 Hello from kernel!
+--- Kernel Log Demo ---
+String: hello world
+Decimal: -42
+Hex: 0xdeadbeef
+Long hex: 0x80000000
+Char: Z
+Percent: 100%
+--- Phase 3: Trap Test ---
+Triggering ECALL to test trap handler...
+=== TRAP HANDLER ===
+mcause: 0xa
+mepc:   0x80000120
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+=== TRAP END ===
+Returned from trap handler!
+Trap round-trip successful!
 ```
 
-- UART 写入次数：37 次（37 个字符，含换行）
+- UART 写入次数：约 200 次（含所有 printk 格式测试 + trap handler 日志）
 - Fatal 异常：0 次
+- ECALL 触发 trap → handler 解码 mcause=0xa → mepc+4 → mret 返回 → 继续执行
 - 内核最终停在 `while(1){}` 死循环中正常运转
 
 ## 四、模块完成度
@@ -97,15 +120,18 @@ Hello from kernel!
 | CPU | cpu.h/cpp | ✅ 完成 | PC、32 通用寄存器、M/S/U 模式、fetch/execute/handle_exception |
 | Bus MMIO 路由 | bus.h/cpp | ✅ 完成 | UART/CLINT/PLIC/DRAM 全部路由，循环依赖已解决 |
 | 指令集 | instructions.h/cpp | ✅ 完成 | 约 50 条 RV64I 指令，dispatch table 完整 |
-| MiniOS | os/ | ✅ 完成 | 启动汇编 + C 内核 + 链接脚本 + Makefile |
-| CSR 抽象层 | os/include/csr.h | ✅ 完成 | CSRR/CSRW/CSRS/CSRC 宏封装 |
+| MiniOS 裸机程序 | os/boot/, os/kernel/ | ✅ 完成 | 启动汇编 + C 内核 + 链接脚本 + Makefile |
+| MiniOS UART 驱动 | os/kernel/uart.h/c | ✅ 完成 | uart_init/uart_putc/uart_puts 分离为独立模块 |
+| MiniOS 内核日志 | os/kernel/printk.h/c | ✅ 完成 | 支持 %s/%d/%x/%lx/%c/%%，免除法实现避免依赖 libgcc |
+| CSR 抽象层 | os/include/csr.h | ✅ 完成 | CSRR/CSRW/CSRS/CSRC 宏封装，含 trap 别名宏（TRAP_VEC/EPC/CAUSE/TVAL/STATUS） |
+| Trap 入口汇编 | os/kernel/trap.S | ✅ 完成（阶段 3） | 保存全部 32 个寄存器到栈帧，调用 C handler，恢复后 mret |
+| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3） | 读取 mcause/mepc/mtval，解码异常类型，printk 输出，推进 mepc+4 |
 
 ### 未完成的模块
 
 | 模块 | 状态 |
 |------|------|
 | MMU / 页表 | ❌ 不存在 |
-| 中断/异常处理 | ❌ ECALL/EBREAK 为空实现，trap 机制未建立 |
 | 定时器中断 | ❌ CLINT 定时器中断未接入 CPU |
 | shutdown 机制 | ❌ 内核只能 timeout 终止 |
 
@@ -152,6 +178,36 @@ Hello from kernel!
 **理由**: 这是 RISC-V 平台上 DRAM 的典型起始地址，与 QEMU virt 平台兼容  
 **后果**: 编译器需使用 `-mcmodel=medany`（代码模型支持任意地址）
 
+### Decision 4: printk 免除法实现
+
+**决策**: `print_dec` 使用查表减法（预计算 10 的幂，循环减）替代 `%` 和 `/` 运算符  
+**理由**: 裸机环境下 `-nostdlib` 不链接 libgcc，64 位除法和取模会触发 `__udivdi3`/`__umoddi3` 未定义符号  
+**后果**: 代码稍长但无外部依赖，纯 RV64I 指令即可运行
+
+### Decision 5: ADDIW/SLLIW 分派策略
+
+**决策**: ADDIW 和 SLLIW 从 `instruction2Map`（需要 funct7 匹配）移到 `instructionMap`（只需 opcode+funct3 匹配）  
+**理由**: ADDIW 的 bits[31:25] 是立即数高位而非 funct7，ADDIW 没有 funct7 变体，不需要三重匹配  
+**后果**: SRLIW/SRAIW 保留在 instruction2Map（它们确实需要 funct7 区分逻辑/算术右移）
+
+### Decision 6: SRLI/SRAI funct6 回退
+
+**决策**: 当 `(opcode, funct3, funct7)` 查不到时，回退用 `funct6 = (inst >> 26) & 0x3f` 再查一次  
+**理由**: RV64 的 SRLI/SRAI 使用 6 位移位量，`shamt[5]` 落在 bit[25]（原 funct7 的 bit 0），导致非零移位量无法匹配 `funct7=0x00`/`0x20`  
+**后果**: SRAI 的 funct6 值为 `0x10`（不是 `0x20`），因为 `0x20 << 1 = 0x40` 的第 6 位会被 funct6 截断
+
+### Decision 7: Trap 帧寄存器保存顺序与 sp 恢复
+
+**决策**: 在 trap_entry 中先单独保存/恢复 t0，再用 t0 计算原始 sp；恢复时 sp 最后恢复
+**理由**: 需要借用 t0 来计算进入 trap 前的 sp（`sp + 256`）。如果恢复寄存器时先恢复 sp（旧版 bug），`ld sp, 16(sp)` 之后 sp 改变，所有后续 `ld` 都从错误地址加载，导致寄存器值混乱进而触发 LoadAccessFault
+**后果**: trap.S 的保存顺序包含"先 st0 → 计算 sp → 恢复 t0"的微妙三步；恢复顺序中 sp 必须是最后一条 ld
+
+### Decision 8: mepc+4 推进策略
+
+**决策**: trap handler 在返回前执行 `trap_epc_write(epc + 4)`
+**理由**: ECALL 是 4 字节指令，mret 回到 mepc 指向的地址。如果不推进 mepc，mret 会回到同一条 ECALL，形成无限循环（每个 trap 重新执行 ECALL → 再次 trap）
+**后果**: 此策略对非 ECALL 类异常（如非法指令、断点）也需要推进 mepc 否则会死循环；未来阶段可能需要按异常类型决定推进量（如压缩指令 2 字节）
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -160,9 +216,11 @@ Hello from kernel!
 | ~~JAL 立即数解码 bug~~ | 致命 | ✅ 已修复 |
 | ~~UART 测试挂起~~ | 中 | ✅ 已修复 |
 | ~~指令分派表缺失~~ | 致命 | ✅ 已修复 |
+| ~~ADDIW 分派表 funct7 误匹配~~ | 致命 | ✅ 已修复（阶段 2） |
+| ~~SRLI/SRAI 分派表 funct7 误匹配~~ | 致命 | ✅ 已修复（阶段 2） |
+| ~~中断/异常处理框架缺失~~ | 中 | ✅ 已实现（阶段 3） |
+| ~~ECALL/EBREAK 为空实现~~ | 低 | ✅ 已实现（阶段 3） |
 | MiniOS 完成后进入死循环 `while(1){}` 无法退出 | 低 | 预期行为，后续需要 shutdown 机制 |
-| ECALL/EBREAK 目前为空实现 | 低 | 后续阶段实现 |
-| 无中断/异常处理框架 | 中 | 阶段 2 任务 |
 
 ## 八、当前文件结构
 
@@ -195,7 +253,14 @@ mycpu/
 │   ├── boot/
 │   │   └── start.S          (启动汇编：设栈、清零 BSS、跳转 kernel_main)
 │   ├── kernel/
-│   │   └── kernel.c         (内核 C 代码：UART 输出、kernel_main)
+│   │   ├── kernel.c         (内核入口：UART 输出 + printk 演示 + ECALL trap 测试)
+│   │   ├── uart.h           (UART 驱动头文件)
+│   │   ├── uart.c           (UART 驱动：uart_putc/uart_puts)
+│   │   ├── printk.h         (内核日志头文件)
+│   │   ├── printk.c         (内核日志：%s/%d/%x/%lx/%c/%%，免除法)
+│   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + mret)
+│   │   ├── trap.h           (trap handler 头文件)
+│   │   └── trap.c           (trap handler：读取 mcause/mepc/mtval，printk 输出)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/
@@ -219,11 +284,11 @@ mycpu/
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
-| P0 | 回顾阶段 2 任务定义，确定下一步方向 | 阶段 2 |
-| P0 | 实现 trap 机制（mtvec/mepc/mcause/mstatus CSR 写入） | 阶段 2 |
-| P1 | CLINT 定时器中断接入 CPU | 阶段 2 |
+| P0 | CLINT 定时器中断接入 CPU | 阶段 4 |
+| P0 | 实现定时器 tick + UART 输出 | 阶段 4 |
+| P1 | mstatus.mie 中断使能位验证 | 阶段 4 |
 | P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
-| P2 | 完善 ECALL 实现（至少支持 shutdown） | 阶段 2 |
+| P2 | 完善 shutdown 机制（通过 ECALL 触发 halt） | 未来阶段 |
 
 ## 十、本轮关键学习点
 
@@ -232,3 +297,10 @@ mycpu/
 3. **MMIO 地址路由**：CPU 用 `load/store` 访问外设寄存器，无需独立 I/O 指令。这是 RISC-V 架构的核心理念。
 4. **链接脚本**：裸机程序需要链接脚本定义 .text/.data/.bss 的加载地址和链接地址。
 5. **forward declaration + unique_ptr**：打破 C++ 循环依赖的模式。
+6. **裸机环境无 libgcc**：`-nostdlib` 下没有 `__udivdi3`/`__umoddi3` 等编译器辅助函数，64 位除法需手动避免或用减法替代。
+7. **RISC-V funct7 vs funct6**：RV64 的移位立即数指令（SRLI/SRAI/SRLIW/SRAIW）使用 6 位 shamt，bit[25] 是 shamt[5] 而非 funct7[0]。指令分派必须用 funct6（bits[31:26]）而非 funct7（bits[31:25]）。
+8. **I-type 指令的 funct7 是立即数的一部分**：ADDIW 的 bits[31:25] 是 12 位立即数的高 7 位，不能当作 funct7 用于分派。
+9. **trap 帧的寄存器保存/恢复顺序至关重要**：sp 必须最后恢复，否则 `ld` 的基地址偏移全部错误。借用临时寄存器（如 t0）计算原始 sp 时，需要先保存该寄存器的原始值。
+10. **mret 后必须推进 mepc**：如果不修改 mepc，mret 回到同一指令形成死循环。ECALL 需要 `epc+4`，中断需要 `epc+0`（中断在指令边界采样）。
+11. **预处理宏的 `#` 字符串化不展开参数**：`#csr` 直接字符串化参数名，不会先展开宏别名。要用间接宏 `_csr_read(csr) → csr_read(csr)` 的两层模式让别名先展开。
+12. **M-mode ECALL 的 cause 是 10（0xa）而非 11**：11 是 `EnvironmentCallFromMMode`，但 ECALL 在 M-mode 执行时 cause 为 10。需要对照 RISC-V 特权规范确认具体编码。
