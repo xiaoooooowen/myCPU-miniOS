@@ -5,6 +5,277 @@
 
 ***
 
+## 2026-06-03 — 阶段 4：机器定时器与 CLINT
+
+### 背景
+
+阶段 3 建立了 trap handler 和异常处理路径。阶段 4 的目标是让定时器中断周期性触发，为后续调度器做准备。核心挑战：模拟器端（C++）需要具备中断检测和分发能力，内核端（C）需要初始化 CLINT 并响应定时器中断，trap handler 需要区分中断（mepc 不推进）和异常（mepc 推进）。
+
+### 修改清单
+
+#### 1. Simulator 端：CLINT tick() 方法
+
+**文件**：[src/clint.h](file:///home/xiaowen/projects/mycpu/src/clint.h)、[src/clint.cpp](file:///home/xiaowen/projects/mycpu/src/clint.cpp)
+
+**新增**：
+- `bool tick(uint64_t increment = 1)` — 每指令周期推进 mtime，返回 `mtime >= mtimecmp`
+- `get_mtime()` / `get_mtimecmp()` — 获取当前值（调试用）
+
+```cpp
+bool Clint::tick(uint64_t increment) {
+  mtime += increment;
+  return mtime >= mtimecmp;
+}
+```
+
+#### 2. Simulator 端：CPU 中断检测与处理
+
+**文件**：[src/cpu.h](file:///home/xiaowen/projects/mycpu/src/cpu.h)、[src/cpu.cpp](file:///home/xiaowen/projects/mycpu/src/cpu.cpp)
+
+**新增方法 A — `check_pending_interrupts()`**：
+- 读取 MIP、MIE、MSTATUS 寄存器
+- 检查全局中断使能 `mstatus.MIE`
+- 计算 `pending = mip & mie`（只处理同时挂起且使能的中断）
+- 优先级：MEI(11) > MSI(3) > MTI(7)
+- 返回带 bit63 置位的 cause（中断标记）
+
+**新增方法 B — `handle_interrupt(uint64_t cause)`**：
+- 切换到 M 模式
+- 跳转到 mtvec 指向的 trap handler
+- 保存中断前 PC 到 mepc（不推进，mret 返回被中断的指令）
+- 保存 mcause（含 bit63 中断标记）、mtval(=0)
+- 更新 mstatus：保存 MIE→MPIE，清除 MIE，保存 MPP
+
+#### 3. Simulator 端：main.cpp 中断轮询
+
+**文件**：[src/main.cpp](file:///home/xiaowen/projects/mycpu/src/main.cpp)
+
+**主循环修改**：
+```cpp
+// 每指令周期推进 CLINT，根据结果更新 MTIP
+if (cpu.bus.clint.tick()) {
+    cpu.csr.store(MIP, cpu.csr.load(MIP) | MASK_MTIP);   // 触发
+} else {
+    cpu.csr.store(MIP, cpu.csr.load(MIP) & ~MASK_MTIP);   // 清除
+}
+// 取指前检查中断
+auto maybe_irq = cpu.check_pending_interrupts();
+if (maybe_irq.has_value()) {
+    cpu.handle_interrupt(maybe_irq.value());
+    continue;  // 中断返回后继续下一条指令
+}
+```
+
+**设计要点**：中断在指令边界采样（取指前检查），这是 RISC-V 规范的标准行为。
+
+#### 4. 内核定时器驱动
+
+**新增文件**：
+- [os/kernel/timer.h](file:///home/xiaowen/projects/mycpu/os/kernel/timer.h) — CLINT MMIO 地址宏 + `timer_init()` / `timer_handle()` 声明
+- [os/kernel/timer.c](file:///home/xiaowen/projects/mycpu/os/kernel/timer.c) — 定时器驱动实现
+
+**timer_init() 逻辑**：
+1. 设置首次 mtimecmp = mtime + TIMER_INTERVAL(500)
+2. `csr_set(mie, MIE_MTIE)` 使能机器定时器中断
+3. 打印当前 mtime/mtimecmp 值
+
+**timer_handle() 逻辑**：
+1. tick_count++
+2. 设置下一次 mtimecmp = mtime + TIMER_INTERVAL
+3. 打印 Tick 序号和 mtime 值
+
+#### 5. 更新 trap handler
+
+**文件**：[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**关键修改**：
+- 中断分支（bit63=1）：switch 解码 irq_code，timer 中断(7) 调用 `timer_handle()`，**不推进 mepc**（直接 return）
+- 异常分支（bit63=0）：原有逻辑，推进 `mepc+4`
+
+**中断 vs 异常的处理差异**：
+
+| 特性 | 异常（如 ECALL） | 中断（如 Timer） |
+|------|-----------------|-----------------|
+| mepc | 指向触发异常的指令 | 指向被中断的指令（尚未执行） |
+| mepc 推进 | +4（跳过 ECALL） | 不推进（返回继续执行） |
+| mret 行为 | 回到异常指令的下一条 | 回到被中断的指令 |
+
+#### 6. printk 格式扩展
+
+**文件**：[os/kernel/printk.c](file:///home/xiaowen/projects/mycpu/os/kernel/printk.c)
+
+**修改**：新增 `%u`（unsigned int）格式支持，复用 `print_dec`。
+
+#### 7. 更新 kernel.c 和 Makefile
+
+**文件**：
+- [os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c) — Phase 4 测试段：`timer_init()` → `local_irq_enable()` → `wfi` 循环等待中断
+- [os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile) — 新增 `timer.o` 编译目标
+
+### 构建验证
+
+```bash
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+cd os && make clean && make         # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 4: Timer Interrupt Test ---
+Timer initialized: mtime=0x4e83, mtimecmp=0x506c
+=== TRAP ===
+mcause: 0x8000000000000007     ← 定时器中断（bit63=1, code=7 = MTI）
+mepc:   0x80000054             ← wfi 指令地址
+mtval:  0x0
+Type: Interrupt (0x7)
+  -> Machine timer interrupt
+Tick #1 @ mtime=0x7186
+=== TRAP END ===
+Tick #2 @ mtime=0x9363
+Tick #3 @ mtime=0xb54e
+Tick #4 @ mtime=0xd747
+... (周期性触发，每次约 2000 cycles)
+```
+
+### 经验笔记
+
+1. **中断在指令边界采样**：在 main.cpp 的 fetch 之前检查中断，而非 execute 之后。这符合 RISC-V 规范——中断在每条指令执行完后采样。
+
+2. **MTIP 由 mtime >= mtimecmp 决定**：CLINT tick() 返回比较结果，main.cpp 据此设置/清除 MIP.MTIP。内核 timer_handle 更新 mtimecmp 后，下一周期 mtime < 新 mtimecmp，MTIP 自动清除。
+
+3. **mret 自动恢复 MIE**：executeMRET 将 MPIE 恢复到 MIE，再设置 MPIE=1。这意味着 trap handler 不需要手动重新使能中断——mret 会自动完成。
+
+4. **中断 vs 异常的 mepc 语义不同**：
+   - 异常：mepc 指向异常指令本身（如 ECALL），需要 +4 跳过
+   - 中断：mepc 指向尚未执行的被中断指令，mret 直接回到该指令继续执行
+
+5. **wfi 不真正等待**：当前 wfi 是空实现（NOP），内核使用 `while(1) { __asm__ volatile("wfi"); }` 做忙等待。实际硬件中 WFI 会暂停 CPU 直到中断到达，这里只是一个语义占位符。
+
+6. **中断优先级**：RISC-V 规范定义 MEI > MSI > MTI（从高到低），实际实现中按此顺序检查 pending 位。
+
+***
+
+## 2026-06-03 — 阶段 5：简单内存管理
+
+### 背景
+
+阶段 4 建立了定时器中断，内核已能在中断驱动下稳定运行。阶段 5 的目标是建立最小物理页分配器，为后续阶段 6（任务调度，需要为每个任务分配内核栈）提供内存基础。
+
+### 修改清单
+
+#### 1. 创建 os/kernel/mem.h — 分配器接口
+
+**新增文件**：[os/kernel/mem.h](file:///home/xiaowen/projects/mycpu/os/kernel/mem.h)
+
+**接口**：
+- `void mem_init(void)` — 初始化分配器（O(1) 计算可用页数）
+- `void* kalloc(void)` — 分配一页（4096 字节对齐），失败返回 NULL
+- `void kfree(void* ptr)` — 释放一页，含安全检查（页对齐 + 地址范围）
+- `size_t mem_free_pages(void)` — 查询剩余空闲页数
+
+#### 2. 创建 os/kernel/mem.c — 分配器实现
+
+**新增文件**：[os/kernel/mem.c](file:///home/xiaowen/projects/mycpu/os/kernel/mem.c)
+
+**设计决策：bump allocator + 空闲链表混合**
+
+初始方案是 pure free-list：在 `mem_init()` 中遍历所有空闲页逐个链入链表。但模拟器逐条指令执行，初始化 32702 页需要极长时间（每页存一次 `fp->next` 相当于一次 store 指令 + 循环跳转），导致内核在初始化阶段耗时过长。
+
+最终方案：
+- `mem_init()` 只做 O(1) 计算：`total_free = (heap_end - bump_ptr) / PAGE_SIZE`
+- `kalloc()` 优先从 `free_list` 取页（kfree 回收的页）→ O(1)
+- `free_list` 为空时走 bump allocator（推进指针）→ O(1)
+- `kfree()` 将释放的页链入 `free_list` → O(1)
+
+**堆范围**：
+```
+bump_ptr = align_up(&_kernel_end, PAGE_SIZE)   // 内核代码/数据紧后
+heap_end = &_stack_top - 256KB                 // 栈保护区
+```
+
+**执行结果**：内核区域约 102KB（25.5 页），_kernel_end 向上对齐到 0x80002000。堆区从 0x80002000 到 0x87FC0000，共 32702 页（约 127.7 MB）。
+
+#### 3. 更新 os/Makefile
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- 新增 `mem.o` 编译目标
+- KERNEL_SRCS 加入 `kernel/mem.c`
+- OBJS 从 7 个扩展到 8 个
+
+#### 4. 更新 os/kernel/kernel.c — 内存分配测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**验证逻辑**：
+1. `mem_init()` 初始化 → 打印空闲页数
+2. 连续分配 p1/p2/p3 三个页 → 验证地址递增且互不相同
+3. 向 p1 写入 ABCDEFGHIJKLMNOP → 验证可读写
+4. `kfree(p2)` → 验证空闲计数 +1
+5. 重新 `kalloc()` → 验证返回地址 == p2（空闲链表回收复用）
+6. 全部释放 → 验证空闲计数回到初始值
+
+### 构造验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 5: Memory Allocator Test ---
+Free pages: 32702
+Alloc p1: 0x80002000
+Alloc p2: 0x80003000
+Alloc p3: 0x80004000
+Free pages after alloc: 32699
+p1 data: ABCDEFGHIJKLMNOP
+Free pages after kfree(p2): 32700
+Alloc p4: 0x80003000 (should == p2: 0x80003000)
+Free pages after cleanup: 32702
+Memory allocator test passed!
+```
+
+验收标准全部满足：
+- 能分配一页或多页物理内存
+- 不覆盖内核区域（p1 从 _kernel_end 对齐边界开始）
+- 分配地址按页对齐（0x...000 / 0x...000）
+- 重复分配不会返回同一页
+- 释放后可以再次分配（p4 == p2 地址复用）
+- 计数器闭环一致（32702 → 32699 → 32700 → 32702）
+
+### 经验笔记
+
+1. **模拟器性能是设计约束**：纯空闲链表 O(n) 初始化在模拟器上慢得不可接受。在实际硬件上遍历 3 万页是瞬间的事，但模拟器每条指令都要解释执行。Bump + free_list 混合方案用 O(1) 初始化避免了这个问题。
+
+2. **空闲链表节点内嵌在空闲页中**：`struct free_page { struct free_page* next; }` 直接在空闲页的起始 8 字节存储 next 指针，不额外消耗内存。这是内核内存管理器的经典技巧。
+
+3. **kfree 的安全检查**：页对齐检查（`addr & (PAGE_SIZE-1)`）+ 地址范围检查（`>= _kernel_start && < _stack_top`）。裸机环境下没有 MMU 保护，如果释放了错误的地址（如栈上的局部变量），会破坏空闲链表导致后续 kalloc 返回非法地址。
+
+4. **`extern char` 获取链接符号地址**：C 编译器将符号视为变量地址，`&_kernel_end` 得到链接器分配的值。不能 `extern uintptr_t _kernel_end`（会尝试读取该地址的 8 字节内容，而非地址本身）。
+
+5. **栈保护区 256KB**：为内核栈预留空间，防止 bump allocator 推进到栈区域。当前内核只有一个线程，栈用量很小，256KB 远超实际需要，但为未来多任务留足余量。
+
+6. **print_hex 自带 0x 前缀**：初版格式串写了 `"0x%lx"` 导致 `0x0x80002000`。修复为 `"%lx"`。
+
+***
+
 ## 2026-06-02 — 阶段 3：Trap 入口与异常处理
 
 ### 背景

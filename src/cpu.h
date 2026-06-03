@@ -66,6 +66,12 @@ public:
 
   void handle_exception(const Exception& e);
 
+  // 检查是否有待处理的中断，返回中断 cause（bit63=1），否则返回 nullopt
+  std::optional<uint64_t> check_pending_interrupts();
+
+  // 处理中断（与异常共享 trap 入口）
+  void handle_interrupt(uint64_t cause);
+
 private:
   // 在类外初始化静态成员
   const std::array<std::string, 32> RVABI = {

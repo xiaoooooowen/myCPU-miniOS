@@ -67,6 +67,11 @@ void printk(const char* fmt, ...) {
             print_dec((uint32_t)d);
             break;
         }
+        case 'u': {
+            unsigned int u = __builtin_va_arg(args, unsigned int);
+            print_dec(u);
+            break;
+        }
         case 'x': {
             uint32_t x = __builtin_va_arg(args, uint32_t);
             print_hex(x);

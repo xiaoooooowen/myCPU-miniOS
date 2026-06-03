@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-06-02
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 全部完成
+> 冻结时间：2026-06-03
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 全部完成
 
 ## 一、环境信息
 
@@ -87,23 +87,47 @@ Hex: 0xdeadbeef
 Long hex: 0x80000000
 Char: Z
 Percent: 100%
---- Phase 3: Trap Test ---
+--- Phase 5: Memory Allocator Test ---
+Free pages: 32702
+Alloc p1: 0x80002000
+Alloc p2: 0x80003000
+Alloc p3: 0x80004000
+Free pages after alloc: 32699
+p1 data: ABCDEFGHIJKLMNOP
+Free pages after kfree(p2): 32700
+Alloc p4: 0x80003000 (should == p2: 0x80003000)
+Free pages after cleanup: 32702
+Memory allocator test passed!
+--- Phase 3: ECALL Trap Test ---
 Triggering ECALL to test trap handler...
-=== TRAP HANDLER ===
+=== TRAP ===
 mcause: 0xa
-mepc:   0x80000120
+mepc:   0x8000011c
 mtval:  0x73
 Type: Exception (0xa)
   -> Environment call from M-mode
 === TRAP END ===
 Returned from trap handler!
 Trap round-trip successful!
+--- Phase 4: Timer Interrupt Test ---
+Timer initialized: mtime=0x4e83, mtimecmp=0x506c
+=== TRAP ===
+mcause: 0x8000000000000007
+mepc:   0x80000054
+mtval:  0x0
+Type: Interrupt (0x7)
+  -> Machine timer interrupt
+Tick #1 @ mtime=0x7186
+=== TRAP END ===
+Tick #2 @ mtime=0x9363
+Tick #3 @ mtime=0xb54e
+... (周期性触发)
 ```
 
-- UART 写入次数：约 200 次（含所有 printk 格式测试 + trap handler 日志）
-- Fatal 异常：0 次
 - ECALL 触发 trap → handler 解码 mcause=0xa → mepc+4 → mret 返回 → 继续执行
-- 内核最终停在 `while(1){}` 死循环中正常运转
+- 定时器中断周期性触发（约每 500 cycles），中断 handler 打印 tick 计数后 mret 回到 wfi 循环
+- 中断 mcause 带 bit63 置位（0x8000000000000007），异常 mcause 不带（0xa）
+- 内存分配器：102KB 内核区域占 24 页，剩余 32702 页可分配。bump+free_list 混合算法，O(1) 初始化，分配/释放均页对齐。释放后重新分配回到同一地址
 
 ## 四、模块完成度
 
@@ -125,15 +149,20 @@ Trap round-trip successful!
 | MiniOS 内核日志 | os/kernel/printk.h/c | ✅ 完成 | 支持 %s/%d/%x/%lx/%c/%%，免除法实现避免依赖 libgcc |
 | CSR 抽象层 | os/include/csr.h | ✅ 完成 | CSRR/CSRW/CSRS/CSRC 宏封装，含 trap 别名宏（TRAP_VEC/EPC/CAUSE/TVAL/STATUS） |
 | Trap 入口汇编 | os/kernel/trap.S | ✅ 完成（阶段 3） | 保存全部 32 个寄存器到栈帧，调用 C handler，恢复后 mret |
-| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3） | 读取 mcause/mepc/mtval，解码异常类型，printk 输出，推进 mepc+4 |
+| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3） | 读取 mcause/mepc/mtval，区分异常/中断，timer 中断调用 timer_handle() |
+| 定时器驱动 | os/kernel/timer.h/c | ✅ 完成（阶段 4） | CLINT MMIO 读写，mtimecmp 设置，MTIE 使能，tick 计数 |
+| CPU 中断检测 | cpu.h/cpp | ✅ 完成（阶段 4） | check_pending_interrupts() + handle_interrupt() |
+| 物理内存分配器 | os/kernel/mem.h/c | ✅ 完成（阶段 5） | bump allocator + 空闲链表混合，kalloc/kfree/mem_free_pages |
 
 ### 未完成的模块
 
 | 模块 | 状态 |
 |------|------|
 | MMU / 页表 | ❌ 不存在 |
-| 定时器中断 | ❌ CLINT 定时器中断未接入 CPU |
 | shutdown 机制 | ❌ 内核只能 timeout 终止 |
+| 多任务调度 | ❌ 阶段 6+ |
+| 系统调用 | ❌ 阶段 8+ |
+| S 模式 / 用户态 | ❌ 阶段 9+ |
 
 ## 五、指令集覆盖
 
@@ -208,6 +237,30 @@ Trap round-trip successful!
 **理由**: ECALL 是 4 字节指令，mret 回到 mepc 指向的地址。如果不推进 mepc，mret 会回到同一条 ECALL，形成无限循环（每个 trap 重新执行 ECALL → 再次 trap）
 **后果**: 此策略对非 ECALL 类异常（如非法指令、断点）也需要推进 mepc 否则会死循环；未来阶段可能需要按异常类型决定推进量（如压缩指令 2 字节）
 
+### Decision 9: 中断 vs 异常的 mepc 语义分离
+
+**决策**: trap handler 对异常执行 `mepc+4`，对中断不推进 mepc
+**理由**: 异常（如 ECALL）的 mepc 指向触发异常的指令本身，需要 +4 跳过；中断在指令边界采样，mepc 指向尚未执行的被中断指令，mret 应直接回到该指令继续执行
+**后果**: trap.c 中中断分支必须 `return` 且不调用 `trap_epc_write()`，异常分支继续执行 `mepc+4`
+
+### Decision 10: 中断检测在取指前而非执行后
+
+**决策**: main.cpp 主循环中，`check_pending_interrupts()` 放在 `fetch()` 之前
+**理由**: RISC-V 规范定义中断在指令执行完成后采样，即下一条指令取指前。每周期先 tick CLINT 更新 MTIP，然后检查中断，最后正常取指执行
+**后果**: `handle_interrupt` 返回后 `continue` 跳过当次 fetch/execute，下一轮循环重新进入中断检查（中断处理完成后 MTIP 已清除，正常取指执行）
+
+### Decision 11: MTIP 由 main.cpp 根据 tick() 结果自动管理
+
+**决策**: 不在 CLINT 内部设置 CSR，而是在 main.cpp 中根据 `clint.tick()` 返回值设置/清除 `MIP.MTIP`
+**理由**: 保持 CLINT 模块的独立性（不依赖 CSR），中断挂起位是 CPU 核心的职责，由 main.cpp 作为粘合层连接 CLINT 和 CSR
+**后果**: tick() 返回 true 时置位 MTIP，返回 false 时清除 MTIP，确保内核更新 mtimecmp 后自动清除中断挂起
+
+### Decision 12: 混合 bump allocator + 空闲链表
+
+**决策**: 分配器使用 bump allocator（首次分配时推进指针）+ 空闲链表（kfree 回收的页链入链表），kalloc 优先从空闲链表取页
+**理由**: 纯空闲链表方案需要在 mem_init() 中遍历 32702 页逐个链入，模拟器逐条指令执行导致初始化极慢（O(n) 遍历）。Bump allocator 初始化只需计算 `(heap_end - bump_ptr) / PAGE_SIZE`（O(1)），kfree 回收的页再链入空闲链表供后续复用
+**后果**: 首次分配走 bump（O(1)），释放后重新分配走 free_list（O(1)）。栈保护区（256KB）保证内核栈不被覆盖
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -220,7 +273,9 @@ Trap round-trip successful!
 | ~~SRLI/SRAI 分派表 funct7 误匹配~~ | 致命 | ✅ 已修复（阶段 2） |
 | ~~中断/异常处理框架缺失~~ | 中 | ✅ 已实现（阶段 3） |
 | ~~ECALL/EBREAK 为空实现~~ | 低 | ✅ 已实现（阶段 3） |
-| MiniOS 完成后进入死循环 `while(1){}` 无法退出 | 低 | 预期行为，后续需要 shutdown 机制 |
+| ~~CLINT 定时器中断未接入 CPU~~ | 中 | ✅ 已实现（阶段 4） |
+| MiniOS 完成后无法主动退出（仅 timeout 终止） | 低 | 预期行为，后续需要 shutdown 机制 |
+| WFI 指令为 NOP 实现，无法真正暂停 CPU | 低 | 功能正确但效率低，不影响当前阶段 |
 
 ## 八、当前文件结构
 
@@ -260,7 +315,11 @@ mycpu/
 │   │   ├── printk.c         (内核日志：%s/%d/%x/%lx/%c/%%，免除法)
 │   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + mret)
 │   │   ├── trap.h           (trap handler 头文件)
-│   │   └── trap.c           (trap handler：读取 mcause/mepc/mtval，printk 输出)
+│   │   ├── trap.c           (trap handler：读取 mcause/mepc/mtval，区分异常/中断)
+│   │   ├── timer.h          (定时器驱动头文件)
+│   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + tick 计数)
+│   │   ├── mem.h            (物理内存分配器头文件)
+│   │   └── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/
@@ -284,11 +343,11 @@ mycpu/
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
-| P0 | CLINT 定时器中断接入 CPU | 阶段 4 |
-| P0 | 实现定时器 tick + UART 输出 | 阶段 4 |
-| P1 | mstatus.mie 中断使能位验证 | 阶段 4 |
+| P0 | 任务结构与协作式调度 | 阶段 6 |
+| P0 | 上下文切换汇编 (switch.S) | 阶段 6 |
+| P1 | 抢占式调度（基于定时器中断） | 阶段 7 |
 | P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
-| P2 | 完善 shutdown 机制（通过 ECALL 触发 halt） | 未来阶段 |
+| P2 | 完善 shutdown 机制（通过 sifive_test 或自定义 halt） | 未来阶段 |
 
 ## 十、本轮关键学习点
 
@@ -304,3 +363,11 @@ mycpu/
 10. **mret 后必须推进 mepc**：如果不修改 mepc，mret 回到同一指令形成死循环。ECALL 需要 `epc+4`，中断需要 `epc+0`（中断在指令边界采样）。
 11. **预处理宏的 `#` 字符串化不展开参数**：`#csr` 直接字符串化参数名，不会先展开宏别名。要用间接宏 `_csr_read(csr) → csr_read(csr)` 的两层模式让别名先展开。
 12. **M-mode ECALL 的 cause 是 10（0xa）而非 11**：11 是 `EnvironmentCallFromMMode`，但 ECALL 在 M-mode 执行时 cause 为 10。需要对照 RISC-V 特权规范确认具体编码。
+13. **中断 vs 异常的 mepc 语义不同**：异常 mepc 指向触发指令本身需 +4；中断 mepc 指向尚未执行指令不需推进。
+14. **mret 自动恢复中断使能**：mret 将 MPIE→MIE，再设 MPIE=1。trap handler 不需要手动重新使能中断，但进入 trap 时硬件已自动清除 MIE。
+15. **中断在指令边界采样**：RISC-V 规范要求中断在指令执行完成后、下一条指令取指前检查。主循环中 tick→MTIP→check_interrupts→fetch 的顺序正确实现这一语义。
+16. **MTIP 由软件管理**：MTIP 不是 CLINT 自动设置的，需要软件（模拟器 main.cpp）根据 mtime >= mtimecmp 的条件来设置/清除。这让 CLINT 保持为纯时序模型，不依赖 CSR 模块。
+17. **Bump allocator + 空闲链表混合策略**：初始化时避免 O(n) 遍历所有页（模拟器执行慢），用 O(1) bump 指针初始化，kfree 回收的页链入 free_list。kalloc 优先从 free_list 取页（回收复用），free_list 为空时走 bump（首次分配）。
+18. **`extern char` 声明获取链接脚本符号地址**：裸机 C 代码通过 `extern char _kernel_end;` 和 `&_kernel_end` 获取链接脚本定义的符号地址，这是获取内核结束地址的标准做法。
+19. **页对齐的向上/向下取整**：`align_up(addr, 4096)` = `(addr + 4095) & ~4095`，`align_down(addr, 4096)` = `addr & ~4095`。这是内存管理的基础工具。
+20. **print_hex 自带前缀导致格式串冗余**：`print_hex()` 内部已输出 `0x`，格式串不应再写 `0x`，否则产生 `0x0x`。

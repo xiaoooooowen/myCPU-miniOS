@@ -35,4 +35,9 @@ void Clint::store(uint64_t addr, uint64_t size, uint64_t value) {
   }
 }
 
+bool Clint::tick(uint64_t increment) {
+  mtime += increment;
+  return mtime >= mtimecmp;
+}
+
 }

@@ -5,6 +5,7 @@
 #include "cpu.h"
 #include "log.h"
 #include "exception.h"
+#include "param.h"
 
 int main(int argc, char* argv[]) {
   if (argc != 2) {
@@ -22,6 +23,22 @@ int main(int argc, char* argv[]) {
   cemu::Cpu cpu(code); // 假设Cpu类的构造函数接受指令代码的vector
 
   while (true) {
+    // 推进 CLINT 时间，检测是否触发定时器中断
+    if (cpu.bus.clint.tick()) {
+      // mtime >= mtimecmp，设置机器定时器中断挂起位
+      cpu.csr.store(cemu::MIP, cpu.csr.load(cemu::MIP) | cemu::MASK_MTIP);
+    } else {
+      // mtime < mtimecmp，清除机器定时器中断挂起位
+      cpu.csr.store(cemu::MIP, cpu.csr.load(cemu::MIP) & ~cemu::MASK_MTIP);
+    }
+
+    // 在取指前检查是否有待处理的中断
+    auto maybe_irq = cpu.check_pending_interrupts();
+    if (maybe_irq.has_value()) {
+      cpu.handle_interrupt(maybe_irq.value());
+      continue;
+    }
+
     try {
       auto inst = cpu.fetch();
       if (!inst.has_value()) {

@@ -164,4 +164,57 @@ void Cpu::handle_exception(const Exception& e) {
 
 }
 
+std::optional<uint64_t> Cpu::check_pending_interrupts() {
+  uint64_t mip = csr.load(MIP);
+  uint64_t mie = csr.load(MIE);
+  uint64_t mstatus = csr.load(MSTATUS);
+
+  // 全局中断使能（mstatus.MIE）必须为 1
+  if (!(mstatus & MASK_MIE)) {
+    return std::nullopt;
+  }
+
+  uint64_t pending = mip & mie;
+
+  // 优先级：MEI > MSI > MTI
+  if (pending & MASK_MEIP) {
+    return 11ULL | (1ULL << 63);  // Machine external interrupt
+  }
+  if (pending & MASK_MSIP) {
+    return 3ULL | (1ULL << 63);   // Machine software interrupt
+  }
+  if (pending & MASK_MTIP) {
+    return 7ULL | (1ULL << 63);   // Machine timer interrupt
+  }
+
+  return std::nullopt;
+}
+
+void Cpu::handle_interrupt(uint64_t cause) {
+  uint64_t current_pc = this->pc;
+  Mode current_mode = this->mode;
+
+  // 中断用 M 模式处理（暂不委托给 S 模式）
+  this->mode = Machine;
+
+  // 跳转到 mtvec 指定的 trap handler
+  uint64_t tvec = csr.load(MTVEC);
+  this->pc = tvec & ~0b11;
+
+  // 保存中断前 PC（指向未执行的下一条指令）
+  csr.store(MEPC, current_pc);
+
+  // 保存中断原因
+  csr.store(MCAUSE, cause);
+  csr.store(MTVAL, 0);
+
+  // 更新 mstatus：保存 MIE -> MPIE，清除 MIE，保存 MPP
+  uint64_t status = csr.load(MSTATUS);
+  uint64_t ie = (status & MASK_MIE) >> 3;           // 当前 MIE
+  status = (status & ~MASK_MPIE) | (ie << 7);       // MPIE <- MIE
+  status &= ~MASK_MIE;                               // MIE <- 0
+  status = (status & ~MASK_MPP) | (current_mode << 11);  // MPP <- 中断前模式
+  csr.store(MSTATUS, status);
+}
+
 }

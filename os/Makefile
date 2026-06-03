@@ -10,10 +10,10 @@ SRC_DIR = .
 BUILD_DIR = build
 
 BOOT_SRC = boot/start.S
-KERNEL_SRCS = kernel/kernel.c kernel/uart.c kernel/printk.c kernel/trap.c
+KERNEL_SRCS = kernel/kernel.c kernel/uart.c kernel/printk.c kernel/trap.c kernel/timer.c kernel/mem.c
 KERNEL_ASMS = kernel/trap.S
 
-OBJS = $(BUILD_DIR)/start.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/uart.o $(BUILD_DIR)/printk.o $(BUILD_DIR)/trap_handler.o $(BUILD_DIR)/trap_entry.o
+OBJS = $(BUILD_DIR)/start.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/uart.o $(BUILD_DIR)/printk.o $(BUILD_DIR)/trap_handler.o $(BUILD_DIR)/trap_entry.o $(BUILD_DIR)/timer.o $(BUILD_DIR)/mem.o
 
 .PHONY: all clean dump
 
@@ -38,6 +38,12 @@ $(BUILD_DIR)/trap_handler.o: kernel/trap.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/trap_entry.o: kernel/trap.S | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/timer.o: kernel/timer.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/mem.o: kernel/mem.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/kernel.elf: $(OBJS) linker.ld
