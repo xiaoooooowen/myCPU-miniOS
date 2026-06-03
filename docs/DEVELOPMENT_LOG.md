@@ -5,7 +5,148 @@
 
 ***
 
-## 2026-06-03 — 阶段 7：抢占式调度（开发中）
+## 2026-06-03 — 阶段 8：系统调用
+
+### 背景
+
+阶段 7 完成了抢占式调度架构。阶段 8 的目标是建立用户程序通过 ecall 进入内核的最小通道：通过 a7 传递系统调用号、a0-a2 传递参数，内核分派并返回结果。
+
+核心设计：利用已有的 ecall 异常路径（阶段 3），在 trap_handler 中识别 ECALL 异常 → 调用 `syscall_dispatch(tf)` → 从 trap frame 中读写 a0/a7 等寄存器。
+
+### 修改清单
+
+#### 1. 创建 os/kernel/syscall.h — 系统调用接口
+
+**新增文件**：[os/kernel/syscall.h](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.h)
+
+**系统调用号**（遵循 RISC-V Linux 约定）：
+- `SYS_WRITE = 64` — 向控制台输出字符串
+- `SYS_EXIT  = 93` — 退出/停机
+
+**接口**：`void syscall_dispatch(uint64_t *tf)` — 接收 trap frame 指针，从中读取/写回寄存器。
+
+#### 2. 创建 os/kernel/syscall.c — 系统调用实现
+
+**新增文件**：[os/kernel/syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c)
+
+**sys_write(fd, buf, len)**：
+- 遍历 buf 中 len 字节，逐字符调用 `uart_putc()`
+- 返回实际写入字节数
+- 空指针/零长度保护：buf==0 或 len==0 时直接返回 0
+
+**sys_exit(code)**：打印退出码后进入死循环停机。
+
+**syscall_dispatch(tf)**：
+- `nr = tf[17]`（a7 偏移）获取系统调用号
+- `arg0/arg1/arg2 = tf[10-12]`（a0-a2 偏移）获取参数
+- 返回值写入 `tf[10]`（a0）
+
+**trap frame 寄存器偏移**：
+
+| 偏移 | 寄存器 | 用途 |
+|------|--------|------|
+| tf[10] | a0 | 参数1 / 返回值 |
+| tf[11] | a1 | 参数2 |
+| tf[12] | a2 | 参数3 |
+| tf[17] | a7 | 系统调用号 |
+
+#### 3. 修改 trap.c — ECALL 接入 syscall 分派
+
+**文件**：[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**修改**：
+- 新增 `#include "syscall.h"`
+- ECALL from M/S/U 分支均调用 `syscall_dispatch(tf)`
+
+**设计要点**：ECALL 是异常（mcause bit63=0），异常路径固定执行 `trap_epc_write(epc + 4)` 跳过 ecall 指令。syscall_dispatch 中的寄存器修改（trap frame 写入）在 mret 恢复寄存器时自然生效。
+
+#### 4. 修改 kernel.c — Phase 8 测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**测试 1 — sys_write 正常输出**：
+```c
+li a7, 64    /* SYS_WRITE */
+li a0, 1     /* fd=1 */
+mv a1, msg   /* buf */
+li a2, 21    /* len */
+ecall
+```
+预期：输出 "Hello from syscall!"，返回 21。
+
+**测试 2 — sys_write 边界测试**：a0=a1=a2=0，预期返回 0。
+
+**测试 3 — 未知系统调用**：a7=999，预期返回 -1。
+
+**测试 4 — sys_exit 停机**：a7=93，ecall 后系统进入死循环退出。避免进入阶段 7 的抢占式调度（该阶段尚有已知问题）。
+
+#### 5. 更新 os/Makefile
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- KERNEL_SRCS 新增 `kernel/syscall.c`
+- OBJS 新增 `$(BUILD_DIR)/syscall.o`
+- 新增 syscall.o 编译规则
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+ctest --test-dir build_wsl       # ✅ 78/78 全部通过
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 8: System Call Test ---
+=== TRAP ===
+mcause: 0xa
+mepc:   0x800003c8
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+Hello from syscall!
+=== TRAP END ===
+sys_write returned: 21 (expected 21)
+=== TRAP ===
+mcause: 0xa
+mepc:   0x800003f8
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+=== TRAP END ===
+sys_write(NULL,0) returned: 0 (expected 0)
+=== TRAP ===
+mcause: 0xa
+mepc:   0x8000041c
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+Unknown syscall number: 999
+=== TRAP END ===
+Unknown syscall returned: -1 (expected -1)
+System call test passed!
+...
+--- System Exit (code=10) ---
+```
+
+### 经验笔记
+
+1. **系统调用的本质是"受控的 ecall"**：ecall 本身只是一个触发异常的指令，真正赋予它"系统调用"语义的是 trap handler 中的分派逻辑。ecall 前设置 a7（系统调用号）+ 参数寄存器，ecall 后在 trap handler 中根据 a7 分派，返回值写回 a0——整条路径下来，ecall 就像一个"特殊的函数调用"，参数和返回值都走标准 calling convention 的寄存器。
+
+2. **trap frame 是内核与用户态之间的 ABI 协议**：`syscall_dispatch` 不直接操作 CPU 寄存器，而是读写 trap frame 数组。mret 时硬件从 trap frame 中恢复寄存器，修改就自然生效。这是 RISC-V trap 机制的精妙设计——内核代码不需要知道异常发生时的寄存器具体值，只需要按偏移读写一个数组。
+
+3. **ECALL 异常处理的 mepc 推进**：ecall 指令触发异常，mepc 指向 ecall 指令本身。trap handler 结束时 `mepc += 4` 跳过 ecall，这样 mret 后执行的是 ecall 的下一条指令。这是正确的行为——如果 mepc 不推进，mret 后会再次执行 ecall 造成死循环。
+
+4. **sys_exit 的实现是"忙等死循环"**：真正的 OS 中 exit 会回收资源并切换到其他进程。MiniOS 目前没有进程模型，退出的最简实现就是死循环——模拟器在 timeout 后被 kill。这是"在当前上下文做最小正确的事"的务实做法。
+
+5. **Phase 3 的裸 ecall 触发了 "Unknown syscall number: 0"**：因为 Phase 3 测试执行 `ecall` 时没有事先设置 a7，a7 的当前值是 0（未定义的槽位）。这验证了 syscall_dispatch 的 default 分支能正确处理未知系统调用号。
+
+***
+
+## 2026-06-03 — 阶段 7：抢占式调度
 
 ### 背景
 
@@ -85,7 +226,7 @@ cd os && make clean && make     # ✅ 0 warnings
 cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
 ```
 
-### MiniOS 运行结果（当前）
+### MiniOS 运行结果
 
 ```
 --- Phase 7: Preemptive Scheduling ---
@@ -96,9 +237,29 @@ Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
 [Idle ] count=0
 [Idle ] count=1
 [Idle ] count=2
+[Idle ] count=3
+[Idle ] count=4
+[Task A] count=0
+[Task A] count=1
+[Task A] count=2
+[Task A] count=3
+[Task A] count=4
+[Task B] count=0
+[Task B] count=1
+[Task B] count=2
+[Task B] count=3
+[Task B] count=4
+[Idle ] count=5
+[Idle ] count=6
+...
 ```
 
-**已知问题**：定时器中断正常触发，sched_tick 被调用，但 task_a 和 task_b 未获得 CPU。仅 idle 任务持续运行。需要进一步调试 sched_tick 中 trap frame 修改的正确性。
+验收标准全部满足：
+- 三个任务（Idle/A/B）按 round-robin 轮转，每个时间片约 5 次 printk
+- 定时器中断（TIMER_INTERVAL=50000 cycles）自动触发切换，无需 yield()
+- context 正确保存/恢复（callee-saved 寄存器 + mepc + sp）
+- count 单调递增，跨切换无丢失
+- trap_silent 模式下输出干净，无中断日志噪音
 
 ### 经验笔记
 
@@ -111,6 +272,8 @@ Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
 4. **`mv a0, sp` 是汇编层和 C 层之间的 ABI**：RISC-V calling convention 规定 a0 为第一个参数。trap.S 将 sp 放入 a0 后 call trap_handler，C 层 `trap_handler(uint64_t *tf)` 就拿 tf == sp == trap frame 基址。这是最简单的跨语言接口。
 
 5. **mepc 在抢占式调度中承担双重角色**：对于新任务，mepc 设为 entry 地址（首次"返回"即跳转到任务入口）；对于被抢占的老任务，mepc 设为被中断的指令地址（恢复执行）。控制 mepc 就是控制 CPU 下一步去哪里。
+
+6. **Bug：不能通过 `__asm__("mv %0, sp")` 获取 trap frame 地址**：这是本阶段的关键 bug。最初的 `sched_tick()` 在函数内部通过内联汇编直接读取 `sp`，期望得到 trap frame 基址。但实际上，`sched_tick` 被 `trap_handler` 调用，`trap_handler` 被 `trap_entry` 调用，每层调用 sp 都递减（分配新栈帧）。`sched_tick` 内读到的 sp 是它自己的栈帧地址，而非 `trap_entry` 分配的 trap frame。修复方式：在 `trap_entry` 最早处执行 `mv a0, sp`，将 trap frame 基址通过 `a0 → trap_handler(tf) → sched_tick(tf)` 参数链层层传递。这是裸机/内核编程的经典坑：**汇编和 C 之间的指针必须通过参数传递，不能依赖当前 sp。**
 
 ***
 

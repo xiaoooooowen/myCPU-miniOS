@@ -2,6 +2,7 @@
 #include "printk.h"
 #include "timer.h"
 #include "task.h"
+#include "syscall.h"
 #include "../include/csr.h"
 
 /* 静默模式：抢占式调度阶段减少 trap 输出噪音 */
@@ -66,12 +67,15 @@ void trap_handler(uint64_t *tf) {
     switch (cause) {
         case 10:
             printk("  -> Environment call from M-mode\n");
+            syscall_dispatch(tf);
             break;
         case 9:
             printk("  -> Environment call from S-mode\n");
+            syscall_dispatch(tf);
             break;
         case 8:
             printk("  -> Environment call from U-mode\n");
+            syscall_dispatch(tf);
             break;
         case 3:
             printk("  -> Breakpoint\n");
