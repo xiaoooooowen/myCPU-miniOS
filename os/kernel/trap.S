@@ -79,4 +79,4 @@ trap_entry:
     ld x31,248(sp)   # t6
     ld sp,  16(sp)   # sp 最后恢复
 
-    mret
+    sret

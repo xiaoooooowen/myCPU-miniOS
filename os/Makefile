@@ -3,7 +3,7 @@ CC = $(CROSS_COMPILE)gcc
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 
-CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany -ffreestanding -nostdlib -nostartfiles -O0 -g
+CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany -ffreestanding -nostdlib -nostartfiles -O0 -g -DMINIOS_USE_S_MODE
 LDFLAGS = -T linker.ld -nostdlib
 
 SRC_DIR = .

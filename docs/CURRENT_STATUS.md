@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-06-03
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 全部完成
+> 冻结时间：2026-06-04
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 全部完成
 
 ## 一、环境信息
 
@@ -45,7 +45,7 @@ cd os && make
 - `os/build/kernel.bin` — MiniOS 裸机二进制
 - `os/build/kernel.elf` — MiniOS ELF 文件（含调试符号）
 
-## 三、测试结果（2026-05-29 运行）
+## 三、测试结果（2026-06-04 运行）
 
 ### 测试总览
 
@@ -67,7 +67,7 @@ cd os && make
 ### MiniOS 运行验证
 
 ```bash
-timeout 2 ./build_wsl/cemu os/build/kernel.bin > /tmp/cemu_out.log 2>&1
+timeout 6 ./build_wsl/cemu os/build/kernel.bin > /tmp/cemu_out.log 2>&1
 python3 -c "
 import re
 with open('/tmp/cemu_out.log') as f:
@@ -76,7 +76,7 @@ print(''.join(chars))
 "
 ```
 
-**输出**：
+**输出**（阶段 9 S 模式运行）：
 ```
 MiniOS booting...
 Hello from kernel!
@@ -101,47 +101,48 @@ Memory allocator test passed!
 --- Phase 3: ECALL Trap Test ---
 Triggering ECALL to test trap handler...
 === TRAP ===
-mcause: 0xa
-mepc:   0x80000380
-mtval:  0x73
-Type: Exception (0xa)
-  -> Environment call from M-mode
+scause: 0x9
+sepc:   0x800003dc
+stval:  0x73
+Type: Exception (0x9)
+  -> Environment call from S-mode
+Unknown syscall number: 0
 === TRAP END ===
 Returned from trap handler!
 Trap round-trip successful!
 --- Phase 8: System Call Test ---
 === TRAP ===
-mcause: 0xa
-mepc:   0x800003c8
-mtval:  0x73
-Type: Exception (0xa)
-  -> Environment call from M-mode
+scause: 0x9
+sepc:   0x80000424
+stval:  0x73
+Type: Exception (0x9)
+  -> Environment call from S-mode
 Hello from syscall!
 === TRAP END ===
 sys_write returned: 21 (expected 21)
 === TRAP ===
-mcause: 0xa
-mepc:   0x800003f8
-mtval:  0x73
-Type: Exception (0xa)
-  -> Environment call from M-mode
+scause: 0x9
+sepc:   0x80000454
+stval:  0x73
+Type: Exception (0x9)
+  -> Environment call from S-mode
 === TRAP END ===
 sys_write(NULL,0) returned: 0 (expected 0)
 === TRAP ===
-mcause: 0xa
-mepc:   0x8000041c
-mtval:  0x73
-Type: Exception (0xa)
-  -> Environment call from M-mode
+scause: 0x9
+sepc:   0x80000478
+stval:  0x73
+Type: Exception (0x9)
+  -> Environment call from S-mode
 Unknown syscall number: 999
 === TRAP END ===
 Unknown syscall returned: -1 (expected -1)
 System call test passed!
 --- Phase 7: Preemptive Scheduling ---
 Task subsystem initialized (idle task as task[0]).
-Created task 'task_a' (tid=1, stack=0x80004000, entry=0x80000040)
-Created task 'task_b' (tid=2, stack=0x80005000, entry=0x800000a4)
-Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x8000009c)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x80000100)
+Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 [Idle ] count=0
 [Idle ] count=1
 [Idle ] count=2
@@ -153,31 +154,16 @@ Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
 [Task A] count=3
 [Task A] count=4
 [Task B] count=0
-[Task B] count=1
-[Task B] count=2
-[Task B] count=3
-[Task B] count=4
-[Idle ] count=5
-[Idle ] count=6
-[Idle ] count=7
-[Idle ] count=8
-[Task A] count=5
-[Task A] count=6
-[Task A] count=7
-[Task A] count=8
-[Task B] count=5
-[Task B] count=6
 ...
 ```
 
-- ECALL 触发 trap → handler 解码 mcause=0xa → mepc+4 → mret 返回 → 继续执行
+- ECALL from S-mode 触发 trap → handler 解码 scause=0x9 → sepc+4 → sret 返回 → 继续执行
 - 阶段 8：通过 ecall + a7(系统调用号) + a0-a2(参数) 实现 sys_write 和 sys_exit，syscall_dispatch 读写 trap frame 完成参数传递和返回值写入
-- 定时器中断周期性触发（约每 500 cycles），中断 handler 打印 tick 计数后 mret 回到 wfi 循环
-- 中断 mcause 带 bit63 置位（0x8000000000000007），异常 mcause 不带（0xa）
+- 定时器中断经 mideleg[5] 委托到 S 模式（cause=5, bit63 置位 = 0x8000000000000005），由 sret 返回
 - 内存分配器：内核区域约 102KB，堆区从 0x80003000 开始，剩余约 32701 页可分配。bump+free_list 混合算法，O(1) 初始化,分配/释放均页对齐
 - 协作式调度（阶段6）：3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，yield() 主动让出 CPU
-- 抢占式调度（阶段7）：定时器中断驱动 sched_tick(tf)，通过修改 trap frame 中 callee-saved 寄存器和 mepc 实现任务切换。3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，每个周期约 5 次 printk 后切换，count 单调递增无错，上下文切换正确
-- sys_exit(93) 已不在 kernel_main 中调用（阶段 8 测试后已移除），抢占式调度作为最后阶段持续运行
+- 抢占式调度（阶段7）：定时器中断驱动 sched_tick(tf)，通过修改 trap frame 中 callee-saved 寄存器和 sepc 实现任务切换。3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，每个周期约 5 次 printk 后切换，count 单调递增无错，上下文切换正确
+- S 模式内核（阶段9）：M 模式启动后通过 medeleg/mideleg 委托异常/中断给 S 模式，mret 切换到 S 模式运行 kernel_main。ECALL from S/U-mode 委托到 S 模式 trap handler，定时器中断经 mideleg[5] 委托为 S 模式定时器中断（cause=5），sret 恢复 SPP→mode
 
 ## 四、模块完成度
 
@@ -198,23 +184,27 @@ Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
 | MiniOS UART 驱动 | os/kernel/uart.h/c | ✅ 完成 | uart_init/uart_putc/uart_puts 分离为独立模块 |
 | MiniOS 内核日志 | os/kernel/printk.h/c | ✅ 完成 | 支持 %s/%d/%x/%lx/%c/%%，免除法实现避免依赖 libgcc |
 | CSR 抽象层 | os/include/csr.h | ✅ 完成 | CSRR/CSRW/CSRS/CSRC 宏封装，含 trap 别名宏（TRAP_VEC/EPC/CAUSE/TVAL/STATUS） |
-| Trap 入口汇编 | os/kernel/trap.S | ✅ 完成（阶段 3，阶段 7 增强） | 保存全部 32 个寄存器到 trap frame (256B)，将 sp (trap frame 基址) 作为 a0 传入 trap_handler，恢复后 mret |
-| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3，阶段 7 增强） | trap_handler(tf) 接收 trap frame 指针，定时器中断调用 sched_tick(tf)，trap_set_silent() 静默模式减少输出噪音 |
-| 定时器驱动 | os/kernel/timer.h/c | ✅ 完成（阶段 4） | CLINT MMIO 读写，mtimecmp 设置，MTIE 使能，timer_handle 精简为纯 set + count |
-| CPU 中断检测 | cpu.h/cpp | ✅ 完成（阶段 4） | check_pending_interrupts() + handle_interrupt() |
+| Trap 入口汇编 | os/kernel/trap.S | ✅ 完成（阶段 3，阶段 7 增强，阶段 9 适配） | 保存全部 32 个寄存器到 trap frame (256B)，将 sp 作为 a0 传入 trap_handler，恢复后 sret |
+| Trap handler | os/kernel/trap.h/c | ✅ 完成（阶段 3，阶段 7 增强，阶段 9 适配） | trap_handler(tf) 接收 trap frame 指针，定时器中断调用 sched_tick(tf)，scause/sepc/stval 替代 mcause/mepc/mtval，trap_set_silent() 静默模式 |
+| 定时器驱动 | os/kernel/timer.h/c | ✅ 完成（阶段 4，阶段 9 适配） | CLINT MMIO 读写，mtimecmp 设置，sie.STIE 使能（替代 mie.MTIE），timer_handle 精简为纯 set + count |
+| CPU 中断检测 | cpu.h/cpp | ✅ 完成（阶段 4，阶段 9 增强） | check_pending_interrupts() 支持 S 模式委托中断检测 + handle_interrupt() 支持 S 模式中断处理 |
 | 物理内存分配器 | os/kernel/mem.h/c | ✅ 完成（阶段 5） | bump allocator + 空闲链表混合，kalloc/kfree/mem_free_pages |
 | 任务管理 | os/kernel/task.h/c | ✅ 完成（阶段 6，阶段 7 增强） | task_struct + context 帧，yield() 协作式调度，sched_tick(tf) 抢占式调度入口 |
 | 上下文切换 | os/kernel/switch.S | ✅ 完成（阶段 6） | switch_to 汇编，保存/恢复 callee-saved 寄存器（ra/sp/s0-s11）；抢占式用 trap frame 路径，不调用 switch_to |
 | 系统调用 | os/kernel/syscall.h/c | ✅ 完成（阶段 8） | syscall_dispatch(tf)，SYS_WRITE/SYS_EXIT，trap frame 中读写 a0/a7，ecall 往返验证通过 |
-| 抢占式调度 | task.c (sched_tick) | ✅ 完成（阶段 7） | 定时器中断 → trap_handler → sched_tick(tf) 修改 trap frame + mepc → mret 跳转新任务 |
+| 抢占式调度 | task.c (sched_tick) | ✅ 完成（阶段 7） | 定时器中断 → trap_handler → sched_tick(tf) 修改 trap frame + sepc → sret 跳转新任务 |
+| M→S 模式启动 | os/boot/start.S | ✅ 完成（阶段 9） | M 模式配置 medeleg/mideleg/stvec → mret 切换到 S 模式 → kernel_main |
+| S 模式 trap 处理 | os/kernel/trap.S/c | ✅ 完成（阶段 9） | sret 替代 mret，scause/sepc/stval 替代 mcause/mepc/mtval，中断/异常 cause 编码适配 S 模式 |
+| Timer 中断委托 | main.cpp + timer.c | ✅ 完成（阶段 9） | mideleg[5] 委托定时器中断到 S 模式（cause=5），MTIP→STIP 映射，sie.STIE 使能 |
+| SIP/MTIP 映射 | csr.cpp | ✅ 完成（阶段 9） | SIP load 正确映射委托中断位（SSIP←MSIP, STIP←MTIP, SEIP←MEIP），SIP store bug 修复 |
 
 ### 未完成的模块
 
 | 模块 | 状态 |
 |------|------|
-| MMU / 页表 | ❌ 不存在 |
+| MMU / 页表 / 虚拟内存 | ❌ 阶段 10 |
+| U 模式（用户态）真正隔离运行 | ❌ 阶段 9 只完成了 ecall 委托路径，尚未让任务在 U 模式执行 |
 | shutdown 机制 | ❌ 内核只能 timeout 终止 |
-| S 模式 / 用户态 | ❌ 阶段 9+ |
 
 ## 五、指令集覆盖
 
@@ -323,6 +313,25 @@ Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
 - 新创建的任务 mepc 指向 entry 函数，被抢占的任务 mepc 指向被中断的指令
 - **重要 Bug 修复**：最初 `sched_tick()` 通过 `__asm__ volatile("mv %0, sp" : "=r"(sp))` 获取 trap frame 基址，但此时 sp 已指向 `sched_tick` 自己的栈帧（因为经历了 trap_entry → trap_handler → sched_tick 多层函数调用），获取的是错误的栈地址。正确做法是：`trap_entry` 在分配 trap frame 后执行 `mv a0, sp`，将 trap frame 基址通过参数链 `trap_entry(a0) → trap_handler(tf) → sched_tick(tf)` 层层传递
 
+### Decision 14: M 模式启动 → mret 切换到 S 模式
+
+**决策**: 内核从 M 模式启动，在 `_start` 中配置 medeleg/mideleg/stvec 后将 MPP 设为 Supervisor，通过 mret 切换到 S 模式运行 `kernel_main`
+**理由**: RISC-V 没有"跳转到 S 模式"的指令，唯一途径是 mret 指令。在 mstatus.MPP 中设置目标特权级，在 mepc 中设置目标地址，mret 后 CPU 自动切换特权级并跳转
+**委托配置**:
+- `medeleg[8:9]`: ECALL from U/S-mode → S-mode（cause=8/9 替代 M-mode cause=10/11）
+- `mideleg[5]`: Supervisor timer interrupt → S-mode（cause=5 替代 M-mode cause=7）
+**后果**:
+- S 模式 trap handler 使用 scause/sepc/stval/sstatus，不再使用 M 模式 CSR
+- 定时器中断从 cause=7(MTI) 变为 cause=5(STI)，trap.c 的 switch 分支需对应修改
+- `MINIOS_USE_S_MODE` 宏使内核 C 代码通过 `trap_epc_read()` 等抽象层自动使用 S 模式 CSR
+- 保留 `trap_entry_m` 作为 M 模式 trap 向量（死循环），处理非预期陷阱
+
+### Decision 15: SIP 委托中断位映射不是简单 AND
+
+**决策**: `csr.load(SIP)` 需按 cause 编号做位映射（SSIP←MSIP, STIP←MTIP, SEIP←MEIP），而非 `MIP & MIDELEG`
+**理由**: RISC-V 规范中，M 模式中断 cause N 委托到 S 模式后 cause 为 N-2。对应的 pending 位也需从 MIP bit(2N+3) 映射到 SIP bit(2(N-2)+1)。MTIP(bit7) 和 STIP(bit5) 是不同的 bit，`MIP & MIDELEG` = `(1<<7) & (1<<5)` = 0，定时器中断永远无法被检测到
+**后果**: CSR 模块的 SIP load 需要遍历 mideleg 的每个委托位，逐位映射 MIP 对应位到 SIP
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -339,7 +348,7 @@ Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
 | MiniOS 完成后无法主动退出（仅 timeout 终止） | 低 | 预期行为，后续需要 shutdown 机制 |
 | WFI 指令为 NOP 实现，无法真正暂停 CPU | 低 | 功能正确但效率低，不影响当前阶段 |
 | IDE/LSP 报告 RISC-V 内联汇编寄存器名未知（`a0`/`a1`/`a7`） | 低 | ✅ 已修复 — 宿主 x86 语言服务器不认识 RISC-V 寄存器名，用 `#ifdef __riscv` 包裹内联汇编，`#else` 分支提供无害替代。不影响交叉编译和运行 |
-| 抢占式调度 sched_tick 未触发任务切换 | 高 | 开发中 — 定时器中断正常触发，sched_tick 被调用，但 task_a/b 未获得 CPU |
+| 抢占式调度 sched_tick 未触发任务切换 | 高 | ✅ 已修复（阶段 9 — SIP/MTIP 委托映射修复） |
 
 ## 八、当前文件结构
 
@@ -370,18 +379,18 @@ mycpu/
 │   ├── Makefile             (交叉编译：riscv64-unknown-elf-gcc)
 │   ├── linker.ld            (链接脚本：OUTPUT_ARCH(riscv), 0x80000000)
 │   ├── boot/
-│   │   └── start.S          (启动汇编：设栈、清零 BSS、跳转 kernel_main)
+│   │   └── start.S          (启动汇编：设栈、清零 BSS、配置 medeleg/mideleg/stvec、mret 切换到 S 模式 → kernel_main)
 │   ├── kernel/
 │   │   ├── kernel.c         (内核入口：printk 演示 + 内存分配器测试 + ECALL trap + 系统调用测试 + 抢占式调度测试)
 │   │   ├── uart.h           (UART 驱动头文件)
 │   │   ├── uart.c           (UART 驱动：uart_putc/uart_puts)
 │   │   ├── printk.h         (内核日志头文件)
 │   │   ├── printk.c         (内核日志：%s/%d/%x/%lx/%c/%%，免除法)
-│   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + mret + 传 trap frame 指针)
+│   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + sret + 传 trap frame 指针)
 │   │   ├── trap.h           (trap handler 头文件)
-│   │   ├── trap.c           (trap handler：接收 trap frame，中断分支调用 sched_tick，trap_silent 模式)
+│   │   ├── trap.c           (trap handler：接收 trap frame，中断分支调用 sched_tick，trap_silent 模式，S 模式 cause 编码)
 │   │   ├── timer.h          (定时器驱动头文件)
-│   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + mtimecmp 设置)
+│   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + mtimecmp 设置，S 模式 STIE)
 │   │   ├── mem.h            (物理内存分配器头文件)
 │   │   ├── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
 │   │   ├── task.h           (任务管理头文件：task_struct + context + sched_tick)
@@ -412,7 +421,7 @@ mycpu/
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
-| P1 | S 模式与用户态雏形 | 阶段 9 |
+| P1 | 虚拟内存与 Sv39 页表 | 阶段 10 |
 | P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
 | P2 | 完善 shutdown 机制（通过 sifive_test 或自定义 halt） | 未来阶段 |
 
@@ -443,3 +452,7 @@ mycpu/
 23. **协作式 vs 抢占式使用不同的上下文切换路径**：协作式 yield → switch_to（C 调用汇编，保存/恢复 callee-saved）；抢占式 sched_tick → 直接修改 trap frame + mepc（利用硬件自动保存的所有寄存器）。
 24. **trap frame 布局是汇编与 C 之间的 ABI 契约**：trap.S 按固定偏移保存 32 个寄存器到栈上 256B 区域，trap.c 中的 trap_handler(tf) 和 sched_tick(tf) 通过同样的偏移读写 callee-saved 寄存器。这是组装接口设计的关键。`mv a0, sp` 将 trap frame 基址作为第一个参数传入。
 25. **函数调用会使 sp 偏移，不能直接读 sp 获取 trap frame**：`sched_tick` 被 `trap_handler` 调用，`trap_handler` 被 `trap_entry` 调用。每层调用 `sp` 都会递减（分配新栈帧），因此 `sched_tick` 内部直接读 `sp` 得到的是自己的栈帧而非 trap frame。正确方式是在最外层（`trap_entry`）将 trap frame 基址通过参数链传递进来。这是裸机/内核编程中的常见陷阱：汇编与 C 之间的指针传递。
+26. **mret 是特权级切换的唯一途径**：RISC-V 没有"跳转到 S 模式"或"跳转到 U 模式"的指令。从高特权级进入低特权级只能通过 xRET 指令：在 mstatus 的 xPP 字段设置目标特权级，在 xEPC 中设置目标地址，执行 mret/sret 后 CPU 自动切换。这是 RISC-V 特权架构的核心机制。
+27. **medeleg/mideleg 改变整个 trap 入口 CSR 集合**：委托不仅仅是"转发"陷阱。它让硬件使用 stvec 替代 mtvec、sepc 替代 mepc、scause 替代 mcause——两套完全独立的 CSR 集合。
+28. **MIP 和 SIP 的位映射不是简单 AND**：MTIP(bit7) 和 STIP(bit5) 是不同的 bit 位置。`(1<<7) & (1<<5)` = 0，导致委托后的定时器中断永远检测不到。正确做法是按 cause 编号映射：STIP 对应 MTIP 的位需要移位映射。
+29. **CSR 抽象层的价值在特权级迁移时体现**：阶段 0.5 设计的 `MINIOS_USE_S_MODE` 宏开关让所有内核代码通过一个编译 flag 即可从 M 模式切换到 S 模式，无需逐行修改 CSR 名称。回退只需改 Makefile 一行。这是"封装变化"原则在系统编程中的工程实践。

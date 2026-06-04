@@ -126,8 +126,8 @@ void yield(void) {
  * 核心逻辑：
  *   1. 从 trap frame 中提取当前任务的 callee-saved 寄存器，保存到 current->ctx
  *   2. 调用 schedule() 选择下一个就绪任务
- *   3. 将下一个任务的 ctx 写回 trap frame 和 mepc
- *   4. trap_entry 的尾随后续恢复寄存器 + mret 时，
+ *   3. 将下一个任务的 ctx 写回 trap frame 和 sepc
+ *   4. trap_entry 的尾随后续恢复寄存器 + sret 时，
  *      将自然跳转到新任务的执行流
  *
  * trap frame 布局（trap.S 定义，256 字节）：
@@ -172,7 +172,7 @@ void sched_tick(uint64_t *tf) {
 
     /*
      * 保存当前任务上下文：
-     *   ra  = mepc（被中断的指令地址，mret 后应返回此处）
+     *   ra  = sepc（被中断的指令地址，sret 后应返回此处）
      *   sp  = tf[2]（进入 trap 前的原始 sp）
      *   s0-s11 直接从 trap frame 中读取
      *
@@ -205,13 +205,13 @@ void sched_tick(uint64_t *tf) {
     /*
      * 恢复下一个任务上下文：
      *   1. 将 next->ctx 中的 callee-saved 寄存器写回 trap frame
-     *   2. 将 mepc 设为 next->ctx.ra（mret 时将跳转到此处）
+     *   2. 将 sepc 设为 next->ctx.ra（sret 时将跳转到此处）
      *
      * 对于新创建的任务：ctx.ra = entry, ctx.sp = 栈顶, ctx.s*=0
-     *   → trap_entry 尾随恢复 sp 到新任务栈 + mret 跳转到 entry ✓
+     *   → trap_entry 尾随恢复 sp 到新任务栈 + sret 跳转到 entry ✓
      *
      * 对于被抢占的任务：ctx 保存着被中断时的完整 callee-saved 状态
-     *   → trap_entry 尾随恢复 sp 到任务原栈 + mret 跳转到被中断指令 ✓
+     *   → trap_entry 尾随恢复 sp 到任务原栈 + sret 跳转到被中断指令 ✓
      */
     trap_epc_write(next->ctx.ra);
     tf[2]  = next->ctx.sp;

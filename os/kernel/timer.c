@@ -10,8 +10,8 @@ void timer_init(void) {
     /* 设置首次定时器中断 */
     *mtimecmp = *mtime + TIMER_INTERVAL;
 
-    /* 使能机器定时器中断（mie.MTIE） */
-    csr_set(mie, MIE_MTIE);
+    /* 使能监管模式定时器中断（sie.STIE） */
+    csr_set(sie, SIE_STIE);
 
     printk("Timer initialized: mtime=%lx, mtimecmp=%lx\n",
            *mtime, *mtimecmp);

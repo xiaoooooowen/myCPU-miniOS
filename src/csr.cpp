@@ -29,8 +29,21 @@ uint64_t Csr::load(size_t addr) const {
   switch (addr) {
     case SIE:
       return csrs[MIE] & csrs[MIDELEG];
-    case SIP:
-      return csrs[MIP] & csrs[MIDELEG];
+    case SIP: {
+      /*
+       * 委托中断映射：SIP[2n+1] = MIP[2n+3] (n = 0, 2, 4)
+       *   SSIP (bit 1) = MSIP (bit 3)
+       *   STIP (bit 5) = MTIP (bit 7)
+       *   SEIP (bit 9) = MEIP (bit 11)
+       */
+      uint64_t mideleg = csrs[MIDELEG];
+      uint64_t mip = csrs[MIP];
+      uint64_t sip = 0;
+      if (mideleg & (1ULL << 1))  sip |= (mip & (1ULL << 3))  ? (1ULL << 1)  : 0;
+      if (mideleg & (1ULL << 5))  sip |= (mip & (1ULL << 7))  ? (1ULL << 5)  : 0;
+      if (mideleg & (1ULL << 9))  sip |= (mip & (1ULL << 11)) ? (1ULL << 9)  : 0;
+      return sip;
+    }
     case SSTATUS:
       return csrs[MSTATUS] & MASK_SSTATUS;
     default:
@@ -45,7 +58,7 @@ void Csr::store(size_t addr, uint64_t value) {
       csrs[MIE] = (csrs[MIE] & ~csrs[MIDELEG]) | (value & csrs[MIDELEG]);
     break;
     case SIP:
-      csrs[MIP] = (csrs[MIE] & ~csrs[MIDELEG]) | (value & csrs[MIDELEG]);
+      csrs[MIP] = (csrs[MIP] & ~csrs[MIDELEG]) | (value & csrs[MIDELEG]);
     break;
     case SSTATUS:
       csrs[MSTATUS] = (csrs[MSTATUS] & ~MASK_SSTATUS) | (value & MASK_SSTATUS);

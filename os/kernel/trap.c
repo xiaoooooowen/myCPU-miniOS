@@ -21,16 +21,16 @@ void trap_handler(uint64_t *tf) {
 
         if (!trap_silent) {
             printk("=== TRAP ===\n");
-            printk("mcause: %lx\n", cause);
-            printk("mepc:   %lx\n", epc);
-            printk("mtval:  %lx\n", tval);
+            printk("scause: %lx\n", cause);
+            printk("sepc:   %lx\n", epc);
+            printk("stval:  %lx\n", tval);
         }
 
         switch (irq_code) {
-            case 7:
+            case 5:
                 if (!trap_silent) {
                     printk("Type: Interrupt (%lx)\n", cause);
-                    printk("  -> Machine timer interrupt\n");
+                    printk("  -> Supervisor timer interrupt\n");
                 }
                 timer_handle();
                 sched_tick(tf);
@@ -38,13 +38,13 @@ void trap_handler(uint64_t *tf) {
                     printk("=== TRAP END ===\n");
                 }
                 return;
-            case 3:
+            case 1:
                 printk("Type: Interrupt (%lx)\n", cause);
-                printk("  -> Machine software interrupt\n");
+                printk("  -> Supervisor software interrupt\n");
                 break;
-            case 11:
+            case 9:
                 printk("Type: Interrupt (%lx)\n", cause);
-                printk("  -> Machine external interrupt\n");
+                printk("  -> Supervisor external interrupt\n");
                 break;
             default:
                 printk("Type: Interrupt (%lx)\n", cause);
@@ -60,21 +60,17 @@ void trap_handler(uint64_t *tf) {
 
     /* 异常 */
     printk("=== TRAP ===\n");
-    printk("mcause: %lx\n", cause);
-    printk("mepc:   %lx\n", epc);
-    printk("mtval:  %lx\n", tval);
+    printk("scause: %lx\n", cause);
+    printk("sepc:   %lx\n", epc);
+    printk("stval:  %lx\n", tval);
     printk("Type: Exception (%lx)\n", cause);
     switch (cause) {
-        case 10:
-            printk("  -> Environment call from M-mode\n");
+        case 8:
+            printk("  -> Environment call from U-mode\n");
             syscall_dispatch(tf);
             break;
         case 9:
             printk("  -> Environment call from S-mode\n");
-            syscall_dispatch(tf);
-            break;
-        case 8:
-            printk("  -> Environment call from U-mode\n");
             syscall_dispatch(tf);
             break;
         case 3:
@@ -90,7 +86,7 @@ void trap_handler(uint64_t *tf) {
 
     printk("=== TRAP END ===\n");
 
-    /* 异常：推进 mepc 跳过触发异常的指令 */
+    /* 异常：推进 sepc 跳过触发异常的指令 */
     trap_epc_write(epc + 4);
 }
 

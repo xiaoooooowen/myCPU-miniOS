@@ -152,31 +152,13 @@ void kernel_main(void) {
 
     printk("--- Phase 7: Preemptive Scheduling ---\n");
 
-    /* 在退出前用 sys_exit 停止，避免进入抢占式调度（阶段 7 尚有已知问题） */
-    {
-#ifdef __riscv
-        __asm__ volatile(
-            "li a7, 93\n"       /* SYS_EXIT */
-            "ecall\n"
-            :
-            :
-            : "a0", "a7"
-        );
-#else
-        /* 宿主编译器/LSP 使用，避免 asm 寄存器检查报错 */
-        (void)0;
-#endif
-    }
-
-    /* 如果 sys_exit 未生效，回退到抢占式调度测试 */
-
     task_init();
 
     task_create(task_a, "task_a");
     task_create(task_b, "task_b");
 
-    /* 使能 M 模式全局中断 + 启动定时器中断 — 周期性触发抢占式调度 */
-    csr_set(mstatus, MSTATUS_MIE);
+    /* 使能 S 模式全局中断 + 启动定时器中断 — 周期性触发抢占式调度 */
+    local_irq_enable();
     timer_init();
 
     /* 进入抢占式调度，静默定时器中断的 trap 输出噪音 */

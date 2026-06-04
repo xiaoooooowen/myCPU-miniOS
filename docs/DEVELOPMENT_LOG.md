@@ -5,6 +5,189 @@
 
 ***
 
+## 2026-06-04 — 阶段 9：S 模式与特权级切换
+
+### 背景
+
+阶段 0.5-8 的内核全部运行在 M 模式（Machine Mode），使用 mtvec/mepc/mcause/mret 等 M 模式 CSR。阶段 9 的目标是将内核从 M 模式切换到 S 模式（Supervisor Mode），通过 medeleg/mideleg 寄存器将异常和中断委托给 S 模式处理，建立更接近真实 RISC-V OS 的特权级架构。
+
+### 核心设计
+
+**启动流程**：`_start`(M-mode) → 配置 medeleg/mideleg/stvec → mret → kernel_main(S-mode)
+
+RISC-V 规范不允许直接从 M 模式"跳转"到 S 模式，唯一途径是 mret 指令：在 mstatus.MPP 中设置目标特权级，在 mepc 中设置目标地址，执行 mret 后 CPU 自动将特权级切换为 MPP 并跳转到 mepc。
+
+**委托配置**：
+- `medeleg[8]`: ECALL from U-mode 委托给 S 模式
+- `medeleg[9]`: ECALL from S-mode 不委托（但当前内核在 S 模式运行，S-mode ecall 仍由 S 模式 trap handler 处理）
+- `mideleg[5]`: Supervisor timer interrupt 委托给 S 模式（cause=5，替代 M 模式 cause=7）
+
+### 修改清单
+
+#### 1. start.S — M 模式启动后切换到 S 模式
+
+**文件**：[os/boot/start.S](file:///home/xiaowen/projects/mycpu/os/boot/start.S)
+
+**关键修改**：
+- `trap_entry_m` 移至 `mret` 之后，确保 `_start` 是 `.text.init` 的第一个符号（CPU 从 0x80000000 取指）
+- M 模式阶段：csrw mstatus=0 → 设置 sp → mtvec=trap_entry_m → 清零 BSS
+- 委托配置：csrw medeleg (ECALL U/S) → csrw mideleg (timer bit5)
+- stvec 设置后，通过 `li t0, (1<<11); csrs mstatus, t0` 设置 MPP=S
+- mret → 特权级=MPP=S, PC=mepc=kernel_main
+
+**设计要点**：`trap_entry_m` 是一个死循环（`j trap_entry_m`），处理任何非预期的 M 模式陷阱。正常运行时所有陷阱都应当由 S 模式处理。
+
+#### 2. trap.S — mret 改为 sret
+
+**文件**：[os/kernel/trap.S](file:///home/xiaowen/projects/mycpu/os/kernel/trap.S)
+
+**修改**：尾随 `mret` → `sret`
+
+**设计要点**：sret 的行为与 mret 类似但使用 S 模式 CSR：
+- sepc → PC
+- SPP → mode
+- SPIE → SIE
+- SPP 设为 User mode (0)
+
+#### 3. trap.c — 适配 S 模式 cause 编码
+
+**文件**：[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**修改**：
+- 中断 cause 5 (Supervisor timer) 替代 cause 7 (Machine timer)
+- 中断 cause 1 (Supervisor software) 替代 cause 3 (Machine software)
+- 中断 cause 9 (Supervisor external) 替代 cause 11 (Machine external)
+- 异常 cause 8 (ECALL from U-mode) 替代 cause 10 (ECALL from M-mode)
+- 日志输出 scause/sepc/stval 替代 mcause/mepc/mtval
+- 注释 "推进 mepc" → "推进 sepc"
+
+**设计要点**：由于 `MINIOS_USE_S_MODE` 宏的作用，`trap_epc_read/write` 等宏自动映射到 `sepc` 等 S 模式 CSR，trap.c 的 C 代码无需逐行修改 CSR 名称。
+
+#### 4. timer.c — 使用 S 模式定时器中断
+
+**文件**：[os/kernel/timer.c](file:///home/xiaowen/projects/mycpu/os/kernel/timer.c)
+
+**修改**：`csr_set(mie, MIE_MTIE)` → `csr_set(sie, SIE_STIE)`
+
+**设计要点**：通过 sie 写入 STIE 时，CSR store 函数（csr.cpp）会将其写入 MIE 的对应 bit（由 mideleg 过滤）。内核只需要关心 S 模式的寄存器视图。
+
+#### 5. kernel.c — 使用 S 模式中断使能
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：
+- `csr_set(mstatus, MSTATUS_MIE)` → `local_irq_enable()`（宏自动映射到 sstatus.SIE）
+- 移除 Phase 8 遗留的 `sys_exit(ecall)` 阻塞代码，让抢占式调度正常运行
+
+#### 6. os/include/csr.h — 已有 MINIOS_USE_S_MODE 支持
+
+**文件**：[os/include/csr.h](file:///home/xiaowen/projects/mycpu/os/include/csr.h)
+
+**说明**：阶段 0.5 已添加的 CSR 抽象层（TRAP_VEC/TRAP_EPC/TRAP_CAUSE 等宏）通过 `MINIOS_USE_S_MODE` 控制开关。Makefile 添加 `-DMINIOS_USE_S_MODE` 后所有内核代码自动切换到 S 模式 CSR。
+
+#### 7. Makefile — 添加 MINIOS_USE_S_MODE
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：CFLAGS 追加 `-DMINIOS_USE_S_MODE`
+
+#### 8. cpu.cpp — 模拟器支持 S 模式中断委托
+
+**文件**：[src/cpu.cpp](file:///home/xiaowen/projects/mycpu/src/cpu.cpp)
+
+**check_pending_interrupts 修改**：
+- M 模式路径：保持原有逻辑（MIP & MIE 检查）
+- S/U 模式路径：
+  1. 先检查非委托 M 模式中断（MIP & MIE & ~MIDELEG），优先级 MEI > MSI > MTI
+  2. 再检查委托到 S 模式的中断（csr.load(SIP) & csr.load(SIE)），优先级 SEI > SSI > STI
+  3. 委托中断使用 `csr.load(SIP)/csr.load(SIE)` 而非直接 `MIP & MIDELEG`，确保正确的位映射
+
+**handle_interrupt 修改**：
+- 判断 `csr.is_midelegated(irq_code)` 决定是 S 模式还是 M 模式中断
+- S 模式：设置 mode=Supervisor, PC=stvec, 保存 sepc/scause/stval, 更新 sstatus
+- M 模式：保持原有逻辑
+
+#### 9. csr.cpp — SIP 委托中断位映射修复
+
+**文件**：[src/csr.cpp](file:///home/xiaowen/projects/mycpu/src/csr.cpp)
+
+**SIP load 修改**：从简单的 `MIP & MIDELEG` 改为正确的位映射：
+```cpp
+sip = 0;
+if (mideleg & SSIP) sip |= (mip & MSIP) ? SSIP : 0;  // bit1←bit3
+if (mideleg & STIP) sip |= (mip & MTIP) ? STIP : 0;  // bit5←bit7
+if (mideleg & SEIP) sip |= (mip & MEIP) ? SEIP : 0;  // bit9←bit11
+```
+
+**SIP store 修复**：`csrs[MIE]` → `csrs[MIP]`（修复原有 bug）
+
+**关键发现**：MTIP (MIP bit 7) 和 STIP (SIP bit 5) 是不同的 bit 位置。`MIP & MIDELEG` = `(1<<7) & (1<<5)` = 0，导致定时器中断在委托后永远无法被 S 模式检测到。正确做法是按 cause 映射：M 模式中断 cause N+2 的 pending 位要映射到 S 模式中断 cause N 的 pending 位。
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+ctest --test-dir build_wsl       # ✅ 78/78 全部通过
+```
+
+### MiniOS 运行结果
+
+```
+MiniOS booting...
+Hello from kernel!
+--- Kernel Log Demo ---
+...
+=== TRAP ===
+scause: 0x9
+sepc:   0x800003dc
+stval:  0x73
+Type: Exception (0x9)
+  -> Environment call from S-mode
+...
+System call test passed!
+--- Phase 7: Preemptive Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x8000009c)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x80000100)
+Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
+[Idle ] count=0
+[Idle ] count=1
+[Idle ] count=2
+[Idle ] count=3
+[Idle ] count=4
+[Task A] count=0
+[Task A] count=1
+[Task A] count=2
+[Task A] count=3
+[Task A] count=4
+[Task B] count=0
+...
+```
+
+验收标准全部满足：
+- ECALL from S-mode 异常正确捕获（scause=0x9），trap handler 处理后 sret 返回
+- 系统调用（sys_write/sys_exit）在 S 模式正常工作
+- 抢占式调度在 S 模式正常：定时器中断委托到 S 模式（cause=5），sched_tick 切换任务
+- 三个任务按 Idle → A → B 顺序轮转，context 正确保存/恢复
+- S 模式 sret 正确恢复 SPP→mode, SPIE→SIE
+
+### 经验笔记
+
+1. **mret 是特权级切换的唯一途径**：RISC-V 没有"跳转到 S 模式"的指令。M 模式切换到 S 模式只能通过 mret：设置 MPP=S, mepc=目标地址, 执行 mret。同理，S 模式返回 U 模式使用 sret。这是 RISC-V 特权架构的核心机制。
+
+2. **medeleg/mideleg 不是简单的"转发"**：委托不仅仅是把陷阱从 M 模式转发到 S 模式。它改变了整个 trap 入口行为——使用 stvec 替代 mtvec，sepc 替代 mepc，scause 替代 mcause，sstatus 替代 mstatus。两个 trap 入口是两套完全独立的 CSR 集合。
+
+3. **MIP 和 SIP 的位映射不是 AND**：MTIP (bit 7) 和 STIP (bit 5) 是不同的 bit 位置。`MIP & MIDELEG` 这种简单 AND 无法正确映射——MIP bit 7 和 MIDELEG bit 5 的 AND 结果永远是 0。正确做法是按 cause 编号映射：M 模式中断 cause 7 的 pending (MTIP) 要映射到 S 模式中断 cause 5 的 pending (STIP)。这是本阶段最关键的一个 bug。
+
+4. **`MINIOS_USE_S_MODE` 宏的价值**：阶段 0.5 设计的 CSR 抽象层在这一阶段发挥了关键作用。通过一个编译宏开关，所有内核代码（trap.c, task.c, timer.c, kernel.c）自动从 M 模式 CSR 切换到 S 模式 CSR，无需逐行修改 CSR 名称。代码量最小化，回退只需改 Makefile 一个 flags。
+
+5. **sret vs mret**：两者的行为模式完全一致（读取 xEPC → PC, xPP → mode, xPIE → xIE, 设置 xPP = User），区别仅在于使用的 CSR 集合。从汇编角度看，只是把 `mret` 改成 `sret`。
+
+6. **模拟器中的委托中断检测需要两层判断**：在 S/U 模式下，先检查是否有非委托的 M 模式中断（高优先级，可能抢占 S 模式处理），再检查委托到 S 模式的中断。这确保了中断优先级正确：如果同时有 MEI 和 STI 挂起，MEI 先被处理（进入 M 模式），不会因为 S 模式处理 STI 而延迟。
+
+***
+
 ## 2026-06-03 — 阶段 8：系统调用
 
 ### 背景
