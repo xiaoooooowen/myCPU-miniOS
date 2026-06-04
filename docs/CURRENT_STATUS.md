@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
 > 冻结时间：2026-06-04
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 全部完成
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 + 阶段 10 全部完成
 
 ## 一、环境信息
 
@@ -61,8 +61,9 @@ cd os && make
 | PLIC 测试 (PlicTest) | 13 | 13 | 0 | 0 |
 | CLINT 测试 (ClintTest) | 13 | 13 | 0 | 0 |
 | UART 测试 (UartTest) | 5 | 5 | 0 | 0 |
+| MMU 测试 (MmuTest) | 10 | 10 | 0 | 0 |
 | 自定义指令测试 | 2 | 2 | 0 | 0 |
-| **合计** | **78** | **78** | **0** | **0** |
+| **合计** | **88** | **88** | **0** | **0** |
 
 ### MiniOS 运行验证
 
@@ -76,7 +77,7 @@ print(''.join(chars))
 "
 ```
 
-**输出**（阶段 9 S 模式运行）：
+**输出**（阶段 10 Sv39 分页模式运行）：
 ```
 MiniOS booting...
 Hello from kernel!
@@ -89,14 +90,16 @@ Char: Z
 Percent: 100%
 --- Phase 5: Memory Allocator Test ---
 Free pages: 32701
-Alloc p1: 0x80003000
-Alloc p2: 0x80004000
-Alloc p3: 0x80005000
-Free pages after alloc: 32698
+--- Phase 10: Virtual Memory (Sv39) ---
+Sv39 page table setup complete (identity map 128MB DRAM)
+Alloc p1: 0x80006000
+Alloc p2: 0x80007000
+Alloc p3: 0x80008000
+Free pages after alloc: 32695
 p1 data: ABCDEFGHIJKLMNOP
-Free pages after kfree(p2): 32699
-Alloc p4: 0x80004000 (should == p2: 0x80004000)
-Free pages after cleanup: 32701
+Free pages after kfree(p2): 32696
+Alloc p4: 0x80007000 (should == p2: 0x80007000)
+Free pages after cleanup: 32698
 Memory allocator test passed!
 --- Phase 3: ECALL Trap Test ---
 Triggering ECALL to test trap handler...
@@ -164,6 +167,7 @@ Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 - 协作式调度（阶段6）：3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，yield() 主动让出 CPU
 - 抢占式调度（阶段7）：定时器中断驱动 sched_tick(tf)，通过修改 trap frame 中 callee-saved 寄存器和 sepc 实现任务切换。3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，每个周期约 5 次 printk 后切换，count 单调递增无错，上下文切换正确
 - S 模式内核（阶段9）：M 模式启动后通过 medeleg/mideleg 委托异常/中断给 S 模式，mret 切换到 S 模式运行 kernel_main。ECALL from S/U-mode 委托到 S 模式 trap handler，定时器中断经 mideleg[5] 委托为 S 模式定时器中断（cause=5），sret 恢复 SPP→mode
+- Sv39 虚拟内存（阶段10）：kalloc 分配 3 页（12KB）构建 Sv39 页表，根页表 vpn2=2 映射 DRAM 128MB（2MB 大页 × 64），vpn2=0 映射 MMIO（CLINT/PLIC/UART，2MB 大页）。开启 SATP 后所有已有功能（ECALL、系统调用、抢占式调度）在模拟 MMU 下正常运行。模拟器 MMU 支持 Bare/Sv39 模式、三级地址翻译、4KB/2MB 页、A/D 位自动设置、权限检查（R/W/X）和 3 种页异常（Instruction/Load/Store PageFault）
 
 ## 四、模块完成度
 
@@ -179,6 +183,7 @@ Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 | UART | uart.h/cpp | ✅ 完成 | NS16550A，stdin/stdout 字符 I/O，stdin 线程可控启动 |
 | CPU | cpu.h/cpp | ✅ 完成 | PC、32 通用寄存器、M/S/U 模式、fetch/execute/handle_exception |
 | Bus MMIO 路由 | bus.h/cpp | ✅ 完成 | UART/CLINT/PLIC/DRAM 全部路由，循环依赖已解决 |
+| MMU | mmu.h/cpp | ✅ 完成（阶段 10） | Sv39 地址翻译，三级页表遍历，4KB/2MB 页支持，权限检查，Bare/Sv39 模式 |
 | 指令集 | instructions.h/cpp | ✅ 完成 | 约 50 条 RV64I 指令，dispatch table 完整 |
 | MiniOS 裸机程序 | os/boot/, os/kernel/ | ✅ 完成 | 启动汇编 + C 内核 + 链接脚本 + Makefile |
 | MiniOS UART 驱动 | os/kernel/uart.h/c | ✅ 完成 | uart_init/uart_putc/uart_puts 分离为独立模块 |
@@ -197,12 +202,12 @@ Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 | S 模式 trap 处理 | os/kernel/trap.S/c | ✅ 完成（阶段 9） | sret 替代 mret，scause/sepc/stval 替代 mcause/mepc/mtval，中断/异常 cause 编码适配 S 模式 |
 | Timer 中断委托 | main.cpp + timer.c | ✅ 完成（阶段 9） | mideleg[5] 委托定时器中断到 S 模式（cause=5），MTIP→STIP 映射，sie.STIE 使能 |
 | SIP/MTIP 映射 | csr.cpp | ✅ 完成（阶段 9） | SIP load 正确映射委托中断位（SSIP←MSIP, STIP←MTIP, SEIP←MEIP），SIP store bug 修复 |
+| MiniOS 内核 VM | os/kernel/vm.h/c | ✅ 完成（阶段 10） | Sv39 页表初始化，身份映射 DRAM 128MB + MMIO（CLINT/PLIC/UART），2MB 大页 |
 
 ### 未完成的模块
 
 | 模块 | 状态 |
 |------|------|
-| MMU / 页表 / 虚拟内存 | ❌ 阶段 10 |
 | U 模式（用户态）真正隔离运行 | ❌ 阶段 9 只完成了 ecall 委托路径，尚未让任务在 U 模式执行 |
 | shutdown 机制 | ❌ 内核只能 timeout 终止 |
 
@@ -332,6 +337,24 @@ Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 **理由**: RISC-V 规范中，M 模式中断 cause N 委托到 S 模式后 cause 为 N-2。对应的 pending 位也需从 MIP bit(2N+3) 映射到 SIP bit(2(N-2)+1)。MTIP(bit7) 和 STIP(bit5) 是不同的 bit，`MIP & MIDELEG` = `(1<<7) & (1<<5)` = 0，定时器中断永远无法被检测到
 **后果**: CSR 模块的 SIP load 需要遍历 mideleg 的每个委托位，逐位映射 MIP 对应位到 SIP
 
+### Decision 16: MMU 直连 Dram 而非通过 Bus 进行页表遍历
+
+**决策**: `Mmu::translate()` 内部的页表遍历使用 `dram.load()` 直接读取物理内存中的页表项，而非通过 `Bus::load()`
+**理由**: 页表遍历本身是 MMU 的硬件行为，在物理地址空间中进行。Bus 包含 MMIO 路由逻辑（UART/CLINT/PLIC），如果页表遍历经过 Bus，地址路由会产生不必要的开销和逻辑耦合。此外页表基址必须在 DRAM 范围内，通过 Dram 直接访问是最简洁的实现
+**后果**: MMU 持有 `Dram&` 引用，页表遍历性能等于直接内存访问
+
+### Decision 17: CPU 所有内存访问统一经过 MMU 翻译
+
+**决策**: `Cpu::fetch()`、`Cpu::load()`、`Cpu::store()` 在访问 Bus 之前先调用 `mmu.translate()` 进行虚拟地址转物理地址
+**理由**: 真实 RISC-V 处理器中，MMU 位于 CPU 和总线之间的关键路径上，所有访存请求都必须经过地址翻译。在 SATP.MODE=Bare 时 translate 返回原地址（直通），SATP.MODE=Sv39 时进行三级页表翻译
+**后果**: 从调用层面看，Bus 现在接收的都是物理地址，接口语义更清晰。已通过 10 项 MMU 单元测试和 MiniOS 全功能端到端验证
+
+### Decision 18: MMIO 区域也需在页表中映射
+
+**决策**: 内核页表除了身份映射 DRAM 外，还必须在 `vpn2=0` 的 LV1 表中映射 CLINT/PLIC/UART 三个 MMIO 区域
+**理由**: 开启 Sv39 分页后 CPU 所有 load/store 都经过虚拟地址翻译。UART（0x10000000）、CLINT（0x02000000）、PLIC（0x0C000000）都不在 DRAM 范围内，如果不为它们建立页表映射，printk、timer_init 等所有外设访问都会触发 Load/Store PageFault，内核立即崩溃
+**后果**: 页表从 2 页增加到 3 页（共用根页表，DRAM 和 MMIO 各一个 LV1 表），kalloc 消耗 12KB
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -372,6 +395,7 @@ mycpu/
 │   ├── csr.h / csr.cpp      (控制状态寄存器)
 │   ├── exception.h / .cpp   (异常建模)
 │   ├── instructions.h / .cpp(指令实现 + dispatch table，约 50 条指令)
+│   ├── mmu.h / mmu.cpp       (MMU：Sv39 地址翻译、三级页表遍历、权限检查)
 │   ├── uart.h / uart.cpp    (NS16550A UART 模型)
 │   ├── clint.h / clint.cpp  (CLINT 定时器模型)
 │   └── plic.h / plic.cpp    (PLIC 中断控制器模型)
@@ -397,7 +421,9 @@ mycpu/
 │   │   ├── task.c           (任务管理：task_init/create/yield/schedule/sched_tick)
 │   │   └── switch.S         (上下文切换汇编：switch_to 保存/恢复 callee-saved 寄存器)
 │   │   ├── syscall.h        (系统调用头文件：SYS_WRITE/SYS_EXIT + syscall_dispatch)
-│   │   └── syscall.c        (系统调用：sys_write/sys_exit + trap frame 中 a0/a7 读写)
+│   │   ├── syscall.c        (系统调用：sys_write/sys_exit + trap frame 中 a0/a7 读写)
+│   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init)
+│   │   └── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/
@@ -412,6 +438,7 @@ mycpu/
 │       ├── clint_test.cpp
 │       ├── plic_test.cpp
 │       ├── csr_test.cpp
+│       ├── mmu_test.cpp      (MMU 单元测试：Bare/Sv39 地址翻译、权限检查、页异常)
 │       └── exception.cpp
 └── third_party/
     └── googletest/
@@ -421,7 +448,6 @@ mycpu/
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
-| P1 | 虚拟内存与 Sv39 页表 | 阶段 10 |
 | P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
 | P2 | 完善 shutdown 机制（通过 sifive_test 或自定义 halt） | 未来阶段 |
 
@@ -456,3 +482,5 @@ mycpu/
 27. **medeleg/mideleg 改变整个 trap 入口 CSR 集合**：委托不仅仅是"转发"陷阱。它让硬件使用 stvec 替代 mtvec、sepc 替代 mepc、scause 替代 mcause——两套完全独立的 CSR 集合。
 28. **MIP 和 SIP 的位映射不是简单 AND**：MTIP(bit7) 和 STIP(bit5) 是不同的 bit 位置。`(1<<7) & (1<<5)` = 0，导致委托后的定时器中断永远检测不到。正确做法是按 cause 编号映射：STIP 对应 MTIP 的位需要移位映射。
 29. **CSR 抽象层的价值在特权级迁移时体现**：阶段 0.5 设计的 `MINIOS_USE_S_MODE` 宏开关让所有内核代码通过一个编译 flag 即可从 M 模式切换到 S 模式，无需逐行修改 CSR 名称。回退只需改 Makefile 一行。这是"封装变化"原则在系统编程中的工程实践。
+30. **开启分页后必须映射 MMIO 区域**：仅身份映射 DRAM 不足以让内核在 Sv39 模式下运行。UART/CLINT/PLIC 三个外设的地址（0x10000000/0x02000000/0x0C000000）不在 DRAM 范围内，未映射会导致 printk 等所有外设访问立即触发 PageFault。这是虚拟内存使能时的经典遗忘项。
+31. **Sv39 页表使用 2MB 大页可显著简化映射**：128MB DRAM 只需 64 个 LV1 条目（每个覆盖 2MB），无需额外的 LV0 页表（4096 个 4KB 条目）。PLIC 64MB 只需 32 个 LV1 条目。总共 3 页（12KB）完成全部身份映射。这是空间效率与实现简单性的经典权衡。

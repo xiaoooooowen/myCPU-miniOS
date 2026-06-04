@@ -11,6 +11,7 @@
 #include "bus.h"
 #include "csr.h"
 #include "exception.h"
+#include "mmu.h"
 
 namespace cemu {
 
@@ -29,10 +30,14 @@ public:
   // 控制和状态寄存器。RISC-V ISA为最多4096个CSR预留了一个12位的编码空间（csr[11:0]）。
   Csr csr;
 
+  // MMU：Sv39 虚拟内存地址翻译
+  Mmu mmu;
+
   Cpu(const std::vector<uint8_t>& code)
       : pc(DRAM_BASE),
         bus(code),
-        csr()  // 初始化 Csr
+        csr(),  // 初始化 Csr
+        mmu(csr, bus.dram)  // 初始化 MMU
   {
       regs.fill(0); // 初始化寄存器为0
       regs[2] = DRAM_END; // 设置堆栈指针寄存器的初始值

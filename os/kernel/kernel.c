@@ -1,6 +1,7 @@
 #include "uart.h"
 #include "printk.h"
 #include "mem.h"
+#include "vm.h"
 #include "task.h"
 #include "timer.h"
 #include "trap.h"
@@ -42,6 +43,10 @@ void kernel_main(void) {
     printk("--- Phase 5: Memory Allocator Test ---\n");
     mem_init();
     printk("Free pages: %ld\n", (long)mem_free_pages());
+
+    printk("--- Phase 10: Virtual Memory (Sv39) ---\n");
+    vm_init();
+    printk("Sv39 page table setup complete (identity map 128MB DRAM)\n");
 
     /* 分配 3 页并验证 */
     void *p1 = kalloc();

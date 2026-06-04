@@ -5,6 +5,161 @@
 
 ***
 
+## 2026-06-04 — 阶段 10：虚拟内存与 Sv39 页表
+
+### 背景
+
+阶段 0.5 到阶段 9 的内核全部运行在物理地址空间（Bare 模式）。阶段 10 的目标是在模拟器中实现 Sv39 地址翻译，并在 MiniOS 内核中构建身份映射页表，最终让内核在分页模式下运行全部已有功能。
+
+### 核心设计
+
+**模拟器侧**：新增 `Mmu` 类，位于 CPU 和 Bus 之间，负责虚拟地址到物理地址的翻译。
+
+**MMU 接口**：
+```cpp
+class Mmu {
+  uint64_t translate(uint64_t vaddr, AccessType type);
+  bool is_enabled() const;
+};
+```
+
+- `AccessType::Instruction/Load/Store`：区分取指、加载、存储，用于权限检查
+- `is_enabled()`：检查 `SATP.MODE == Sv39(8)`，否则直通物理地址
+- `translate()`：执行三级页表遍历（VPN[2] → VPN[1] → VPN[0]），失败时抛出对应页异常
+
+**CPU 集成**：`Cpu::fetch()`、`Cpu::load()`、`Cpu::store()` 在访问 Bus 前先调用 `mmu.translate()`。SATP.MODE=Bare（默认值）时翻译退化为直通，向后兼容。
+
+**页表遍历**：MMU 持有 `Dram&` 引用，直接通过 `dram.load()` 读取页表项（物理地址）。不经过 Bus，避免 MMIO 路由的额外开销和耦合。
+
+**权限检查**：
+- 取指需 PTE.X，失败 → InstructionPageFault
+- 加载需 PTE.R，失败 → LoadPageFault
+- 存储需 PTE.W，失败 → StoreAMOPageFault
+- A(ccessed) 位自动设置于每次访问
+- D(irty) 位自动设置于每次存储
+
+**大页支持**：LV1 PTE 若 R|W|X 非零则为 2MB 叶节点。PPN[0] 来自虚拟地址 VPN[0]，PPN[2:1] 来自 PTE。
+
+**MiniOS 内核 VM 模块**：`os/kernel/vm.h/c`
+
+1. `kalloc()` 分配 3 页（12KB）：根页表(l2) + DRAM LV1(l1_dram) + MMIO LV1(l1_mmio)
+2. 根页表：`l2[2]` → l1_dram（DRAM），`l2[0]` → l1_mmio（MMIO）
+3. DRAM 128MB：64 个 2MB 大页，vpn1 = 0..63，RWX 权限
+4. CLINT 2MB：vpn1 = 16，RW 权限
+5. PLIC 64MB：32 个 2MB 大页，vpn1 = 96..127，RW 权限
+6. UART 2MB：vpn1 = 128，RW 权限
+7. 写入 SATP（MODE=Sv39, PPN=l2），执行 `sfence.vma` 刷新 TLB
+
+### 修改清单
+
+#### 1. 新增 `src/mmu.h` 和 `src/mmu.cpp`
+
+**文件**：[src/mmu.h](file:///home/xiaowen/projects/mycpu/src/mmu.h), [src/mmu.cpp](file:///home/xiaowen/projects/mycpu/src/mmu.cpp)
+
+- `Mmu` 类：持有 `Csr&` 和 `Dram&` 引用
+- `translate(vaddr, type)`：Bare 模式直通，Sv39 模式三级遍历
+- `is_enabled()`：检查 SATP MODE 字段
+- 权限检查按 AccessType 区分
+- A/D 位自动设置（写回 DRAM）
+
+#### 2. 修改 `src/cpu.h`
+
+- 新增 `#include "mmu.h"`
+- 新增成员 `Mmu mmu`，构造函数中初始化 `mmu(csr, bus.dram)`
+
+#### 3. 修改 `src/cpu.cpp`
+
+- `Cpu::load()`：`mmu.translate(addr, Mmu::AccessType::Load)` → `bus.load(paddr, size)`
+- `Cpu::store()`：`mmu.translate(addr, Mmu::AccessType::Store)` → `bus.store(paddr, size, value)`
+- `Cpu::fetch()`：`mmu.translate(pc, Mmu::AccessType::Instruction)` → `bus.load(paddr, 32)`
+
+#### 4. 新增 `tests/unitest/mmu_test.cpp`
+
+10 项测试：
+- BareModePassThrough — 未开启分页时地址直通
+- Sv39IdentityMapRead — 身份映射 + 读权限
+- Sv39IdentityMapReadWrite — 身份映射 + 读写权限
+- Sv39IdentityMapExecute — 身份映射 + 执行权限
+- Sv39Remap — 虚拟地址重映射到不同物理页
+- Sv39PageOffsetPreserved — 页内偏移保持不变
+- InvalidPTEPageFault — V=0 触发 LoadPageFault
+- StoreOnReadOnlyPageCausesPageFault — 只读页写入触发 StoreAMOPageFault
+- FetchOnNoExecutePageCausesPageFault — 无可执行权限取指触发 InstructionPageFault
+- Sv39Megapage — 2MB 大页映射正确
+
+#### 5. 新增 `os/kernel/vm.h` 和 `os/kernel/vm.c`
+
+- PTE 标志位宏定义（PTE_V/R/W/X/U/G/A/D）
+- PTE 构造宏：`PTE(ppn, flags)`、`PA2PTE(pa)`
+- `vm_init()`：构建身份映射 + 开启 SATP
+
+#### 6. 修改 `os/kernel/kernel.c`
+
+- `#include "vm.h"`
+- `mem_init()` 之后、allocator 测试之前调用 `vm_init()`
+- 输出 "Phase 10: Virtual Memory (Sv39)" 标识
+
+#### 7. 修改 `os/Makefile`
+
+- 新增 `vm.c` → `build/vm.o` 编译规则
+- `KERNEL_SRCS` 和 `OBJS` 中加入 vm
+
+#### 8. 修改 `CMakeLists.txt`
+
+- `COMMON_SOURCES` 加入 `src/mmu.h` 和 `src/mmu.cpp`
+- `unit_test` 加入 `tests/unitest/mmu_test.cpp`
+
+### 验证
+
+```bash
+# 全部 88 项单元测试通过（78 项原有 + 10 项新增 MMU 测试）
+ctest --test-dir build_wsl --output-on-failure  # 88/88 passed
+
+# MiniOS 在 Sv39 分页模式下全功能运行
+timeout 6 ./build_wsl/cemu os/build/kernel.bin
+```
+
+输出：
+```
+--- Phase 10: Virtual Memory (Sv39) ---
+Sv39 page table setup complete (identity map 128MB DRAM)
+Alloc p1: 0x80006000
+Alloc p2: 0x80007000
+...
+Memory allocator test passed!
+--- Phase 3: ECALL Trap Test ---
+...
+Trap round-trip successful!
+--- Phase 8: System Call Test ---
+...
+System call test passed!
+--- Phase 7: Preemptive Scheduling ---
+...
+[Idle ] count=0...
+[Task A] count=0...
+[Task B] count=0...
+```
+
+### 遇到的问题和解决
+
+**问题 1**：首次运行 Sv39 后内核立即崩溃，无任何输出  
+**原因**：页表只映射了 DRAM（0x80000000-0x87FFFFFF），UART（0x10000000）未映射，printk 的 UART 写触发 Load/Store PageFault  
+**解决**：增加 `l1_mmio` LV1 页表（vpn2=0），映射 CLINT/PLIC/UART。页表从 2 页增加到 3 页
+
+**问题 2**：大页（Megapage）测试失败，翻译结果错误  
+**原因**：测试代码中 PTE PPN 计算错误，使用了 `(pa/PAGE_SIZE)>>9` 而非 `pa/PAGE_SIZE`  
+**解决**：修正为大页 PTE 使用完整 PPN（PPN[0]=0，运行时由 VA 的 vpn0 替换）
+
+### 关键设计决策
+
+**Decision 16**：MMU 直连 Dram 进行页表遍历（不经过 Bus）
+
+**Decision 17**：CPU 所有 fetch/load/store 统一经过 `mmu.translate()`
+
+**Decision 18**：MMIO 区域也需在页表中映射（不止 DRAM）
+
+***
+
 ## 2026-06-04 — 阶段 9：S 模式与特权级切换
 
 ### 背景
