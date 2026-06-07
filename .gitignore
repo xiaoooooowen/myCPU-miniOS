@@ -44,6 +44,17 @@ mycpu/
 # ============ PDF 课程文档 ============
 *.pdf
 
+# ============ 汇报 / 报告相关 ============
+docs/report_assets/
+docs/report_render/
+docs/pandoc-header.tex
+*进度报告*
+*.docx
+
+# ============ LaTeX 中间文件 ============
+*.aux
+*.log
+
 # ============ 系统文件 ============
 .DS_Store
 Thumbs.db
