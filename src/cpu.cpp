@@ -9,21 +9,26 @@
 
 namespace cemu {
 
+Cpu::~Cpu() = default;
+
 std::optional<uint64_t> Cpu::load(uint64_t addr, uint64_t size) {
-  return bus.load(addr, size);
+  uint64_t paddr = mmu.translate(addr, Mmu::AccessType::Load);
+  return bus.load(paddr, size);
 }
 
 bool Cpu::store(uint64_t addr, uint64_t size, uint64_t value) {
-  return bus.store(addr, size, value);
+  uint64_t paddr = mmu.translate(addr, Mmu::AccessType::Store);
+  return bus.store(paddr, size, value);
 }
 
 std::optional<uint32_t> Cpu::fetch() {
-  auto inst = bus.load(pc, 32);
+  uint64_t paddr = mmu.translate(pc, Mmu::AccessType::Instruction);
+  auto inst = bus.load(paddr, 32);
   if (inst.has_value()) {
     LOG(INFO, "Instruction fetched: ", std::hex, inst.value(), std::dec);
     return inst.value();
   }
-  throw Exception(ExceptionType::InstructionAccessFault, pc);
+  throw Exception(ExceptionType::InstructionAccessFault, paddr);
 }
 
 std::optional<uint64_t>  Cpu::execute(uint32_t inst) {
@@ -160,6 +165,111 @@ void Cpu::handle_exception(const Exception& e) {
   // 将状态寄存器（STATUS）的值保存回 CSR 中。
   csr.store(STATUS, status);
 
+}
+
+std::optional<uint64_t> Cpu::check_pending_interrupts() {
+  uint64_t mip = csr.load(MIP);
+  uint64_t mie = csr.load(MIE);
+  uint64_t mstatus = csr.load(MSTATUS);
+  uint64_t mideleg = csr.load(MIDELEG);
+
+  if (mode == Machine) {
+    /* M 模式：检查非委托中断 */
+    if (!(mstatus & MASK_MIE)) {
+      return std::nullopt;
+    }
+
+    uint64_t pending = mip & mie;
+
+    // 优先级：MEI > MSI > MTI
+    if (pending & MASK_MEIP) {
+      return 11ULL | (1ULL << 63);  // Machine external interrupt
+    }
+    if (pending & MASK_MSIP) {
+      return 3ULL | (1ULL << 63);   // Machine software interrupt
+    }
+    if (pending & MASK_MTIP) {
+      return 7ULL | (1ULL << 63);   // Machine timer interrupt
+    }
+  } else {
+    /* S/U 模式：先检查非委托 M 模式中断（高优先级），再检查委托到 S 模式的中断 */
+    uint64_t non_delegated = mip & mie & ~mideleg;
+
+    if (mstatus & MASK_MIE) {
+      // 优先级：MEI > MSI > MTI（非委托）
+      if (non_delegated & MASK_MEIP)
+        return 11ULL | (1ULL << 63);
+      if (non_delegated & MASK_MSIP)
+        return 3ULL | (1ULL << 63);
+      if (non_delegated & MASK_MTIP)
+        return 7ULL | (1ULL << 63);
+    }
+
+    /* 委托到 S 模式的中断：使用 CSR 负载函数正确映射委托位 */
+    uint64_t sip = csr.load(SIP);
+    uint64_t sie = csr.load(SIE);
+    uint64_t sstatus = csr.load(SSTATUS);
+
+    if (sstatus & MASK_SIE) {
+      uint64_t s_pending = sip & sie;
+      // 优先级：SEI > SSI > STI
+      if (s_pending & MASK_SEIP)
+        return 9ULL | (1ULL << 63);  // Supervisor external interrupt
+      if (s_pending & MASK_SSIP)
+        return 1ULL | (1ULL << 63);  // Supervisor software interrupt
+      if (s_pending & MASK_STIP)
+        return 5ULL | (1ULL << 63);  // Supervisor timer interrupt
+    }
+  }
+
+  return std::nullopt;
+}
+
+void Cpu::handle_interrupt(uint64_t cause) {
+  uint64_t current_pc = this->pc;
+  Mode current_mode = this->mode;
+  uint64_t irq_code = cause & 0x7fffffffffffffffULL;
+
+  /* 检查是否委托给 S 模式处理 */
+  bool trap_in_s = (current_mode <= Supervisor) && csr.is_midelegated(irq_code);
+
+  if (trap_in_s) {
+    /* S 模式中断处理 */
+    this->mode = Supervisor;
+
+    uint64_t tvec = csr.load(STVEC);
+    this->pc = tvec & ~0b11;
+
+    csr.store(SEPC, current_pc);
+    csr.store(SCAUSE, cause);
+    csr.store(STVAL, 0);
+
+    /* 更新 sstatus：保存 SIE -> SPIE，清除 SIE，保存 SPP */
+    uint64_t status = csr.load(SSTATUS);
+    uint64_t sie = (status & MASK_SIE) >> 1;          // 当前 SIE
+    status = (status & ~MASK_SPIE) | (sie << 5);      // SPIE <- SIE
+    status &= ~MASK_SIE;                               // SIE <- 0
+    status = (status & ~MASK_SPP) | (current_mode << 8);  // SPP <- 中断前模式
+    csr.store(SSTATUS, status);
+  } else {
+    /* M 模式中断处理（非委托） */
+    this->mode = Machine;
+
+    uint64_t tvec = csr.load(MTVEC);
+    this->pc = tvec & ~0b11;
+
+    csr.store(MEPC, current_pc);
+    csr.store(MCAUSE, cause);
+    csr.store(MTVAL, 0);
+
+    /* 更新 mstatus：保存 MIE -> MPIE，清除 MIE，保存 MPP */
+    uint64_t status = csr.load(MSTATUS);
+    uint64_t ie = (status & MASK_MIE) >> 3;           // 当前 MIE
+    status = (status & ~MASK_MPIE) | (ie << 7);       // MPIE <- MIE
+    status &= ~MASK_MIE;                               // MIE <- 0
+    status = (status & ~MASK_MPP) | (current_mode << 11);  // MPP <- 中断前模式
+    csr.store(MSTATUS, status);
+  }
 }
 
 }

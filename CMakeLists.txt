@@ -16,6 +16,8 @@ set(COMMON_SOURCES
         src/instructions.h
         src/instructions.cpp
         src/log.h
+        src/mmu.h
+        src/mmu.cpp
         src/csr.h
         src/csr.cpp
         src/exception.cpp
@@ -54,6 +56,7 @@ add_executable(unit_test
         tests/unitest/plic_test.cpp
         tests/unitest/client_test.cpp
         tests/unitest/uart_test.cpp
+        tests/unitest/mmu_test.cpp
 )
 
 # 将库链接到 unit_test 可执行文件

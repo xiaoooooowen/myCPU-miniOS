@@ -34,4 +34,45 @@ TEST_F(BusTest, InvalidStoreTest) {
   EXPECT_THROW(bus.store(DRAM_BASE, 10, 0x01), Exception);
 }
 
+TEST_F(BusTest, UartMMIOLoadStore) {
+  uint64_t addr = UART_BASE + UART_LCR;
+  bus.store(addr, 8, 0xAB);
+  auto value = bus.load(addr, 8);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value.value(), 0xAB);
+}
+
+TEST_F(BusTest, UartMMIOStoreOutputsToStdout) {
+  testing::internal::CaptureStdout();
+  bus.store(UART_BASE + UART_THR, 8, 'H');
+  std::string output = testing::internal::GetCapturedStdout();
+  EXPECT_TRUE(output.find('H') != std::string::npos);
+}
+
+TEST_F(BusTest, ClintMMIOLoadStore) {
+  bus.store(CLINT_MTIME, 64, 0xDEADBEEF);
+  auto value = bus.load(CLINT_MTIME, 64);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value.value(), 0xDEADBEEF);
+}
+
+TEST_F(BusTest, ClintMMIOMtimecmp) {
+  bus.store(CLINT_MTIMECMP, 64, 0x12345678);
+  auto value = bus.load(CLINT_MTIMECMP, 64);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value.value(), 0x12345678);
+}
+
+TEST_F(BusTest, PlicMMIOLoadStore) {
+  bus.store(PLIC_PENDING, 32, 0xCAFE);
+  auto value = bus.load(PLIC_PENDING, 32);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value.value(), 0xCAFE);
+}
+
+TEST_F(BusTest, InvalidAddressException) {
+  EXPECT_THROW(bus.load(0x50000000, 64), Exception);
+  EXPECT_THROW(bus.store(0x50000000, 64, 0), Exception);
+}
+
 }  // namespace cemu

@@ -1,6 +1,7 @@
 #pragma once
 
-#include <cstddef> // 引入定义 std::size_t 的头文件
+#include <cstddef>
+#include <cstdint>
 
 namespace cemu {
 
@@ -41,7 +42,7 @@ constexpr size_t SIP = 0x144;  // 监管中断挂起
 constexpr size_t SATP = 0x180;  // 监管地址转换和保护
 
 // mstatus 和 sstatus 字段掩码
-constexpr uint64_t MASK_SIE = 1 << 1;  // 监管中断使能掩码
+constexpr uint64_t MASK_SIE = 1ULL << 1;  // 监管中断使能掩码
 constexpr uint64_t MASK_MIE = 1 << 3;  // 机器中断使能掩码
 constexpr uint64_t MASK_SPIE = 1 << 5;  // 上一次监管中断使能掩码
 constexpr uint64_t MASK_UBE = 1 << 6;  // 用户模式字节顺序掩码
