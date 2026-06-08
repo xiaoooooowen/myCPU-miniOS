@@ -25,6 +25,13 @@
 /* PA2PTE: 将物理地址转为叶节点 PTE */
 #define PA2PTE(pa) PTE((pa) >> 12, PTE_R | PTE_W | PTE_X | PTE_V)
 
+/*
+ * 全局页表指针（供 user_init 访问修改页表）
+ */
+extern volatile uint64_t *kernel_l2;
+extern volatile uint64_t *kernel_l1_dram;
+extern volatile uint64_t *kernel_l1_mmio;
+
 /* 初始化内核 Sv39 页表（身份映射 DRAM 全部 128MB） */
 void vm_init(void);
 

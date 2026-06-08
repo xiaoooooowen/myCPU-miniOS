@@ -23,6 +23,12 @@ int main(int argc, char* argv[]) {
   cemu::Cpu cpu(code); // 假设Cpu类的构造函数接受指令代码的vector
 
   while (true) {
+    // 检查是否被内核要求停机（TEST_FINISH 设备写入）
+    if (cpu.bus.is_halted()) {
+      LOG(cemu::INFO, "Simulation halted by kernel.");
+      break;
+    }
+
     // 推进 CLINT 时间，检测是否触发定时器中断
     if (cpu.bus.clint.tick()) {
       // mtime >= mtimecmp，设置机器定时器中断挂起位

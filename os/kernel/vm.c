@@ -2,6 +2,11 @@
 #include "mem.h"
 #include "../include/csr.h"
 
+/* 全局页表指针，供 user_init 访问 */
+volatile uint64_t *kernel_l2 = NULL;
+volatile uint64_t *kernel_l1_dram = NULL;
+volatile uint64_t *kernel_l1_mmio = NULL;
+
 /*
  * 内存布局常量
  */
@@ -74,6 +79,20 @@ void vm_init(void) {
      *   映射 0x10000000 到 0x101FFFFF
      */
     l1_mmio[128] = PTE(UART_BASE >> 12, PTE_V | PTE_R | PTE_W);
+
+    /*
+     * TEST_FINISH 大页映射（2MB 粒度）：
+     *   vpn2 = 0, vpn1 = 0
+     *   映射 0x00000000 到 0x001FFFFF（包含 TEST_FINISH 0x100000）
+     */
+    l1_mmio[0] = PTE(0, PTE_V | PTE_R | PTE_W);
+
+    /*
+     * 保存全局页表指针，供 user_init 使用
+     */
+    kernel_l2 = l2;
+    kernel_l1_dram = l1_dram;
+    kernel_l1_mmio = l1_mmio;
 
     /*
      * 设置 SATP 开启 Sv39 分页

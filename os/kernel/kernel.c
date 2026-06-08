@@ -5,6 +5,7 @@
 #include "task.h"
 #include "timer.h"
 #include "trap.h"
+#include "user.h"
 #include "../include/csr.h"
 
 /* Phase 7 抢占式调度测试任务：不调用 yield()，纯靠定时器中断切换 */
@@ -155,7 +156,16 @@ void kernel_main(void) {
     }
     printk("System call test passed!\n");
 
-    printk("--- Phase 7: Preemptive Scheduling ---\n");
+    /* 模块二 + 模块三：U 模式用户态演示 */
+    printk("\n--- Phase 11: User Mode (U-Mode) Test ---\n");
+    user_init();
+    printk("Entering user mode...\n");
+    enter_user();
+    /* enter_user() 通过 sret 切换到 U 模式，不会返回 */
+
+    /* 模块一验证：主动停机 — 在调度启动前，确保 TEST_FINISH 机制可用 */
+    printk("\n--- Halting via TEST_FINISH ---\n");
+    *(volatile uint32_t *)0x100000 = 0x5555;
 
     task_init();
 

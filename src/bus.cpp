@@ -37,6 +37,10 @@ std::optional<uint64_t> Bus::load(uint64_t addr, uint64_t size) {
     LOG(INFO, "Bus loading from PLIC address ", std::hex, addr, " with size ", size, " bytes.");
     return plic.load(addr, size);
   }
+  if (addr >= TEST_FINISH && addr <= TEST_FINISH_END) {
+    LOG(INFO, "Bus loading from TEST_FINISH address ", std::hex, addr, " (halted=", halted, ").");
+    return halted ? 1 : 0;
+  }
   throw Exception(ExceptionType::LoadAccessFault, addr);
 }
 
@@ -58,6 +62,11 @@ bool Bus::store(uint64_t addr, uint64_t size, uint64_t value) {
   if (addr >= PLIC_BASE && addr <= PLIC_END) {
     LOG(INFO, "Bus storing value ", std::hex, value, " at PLIC address ", addr, " with size ", size, " bytes.");
     plic.store(addr, size, value);
+    return true;
+  }
+  if (addr >= TEST_FINISH && addr <= TEST_FINISH_END) {
+    LOG(INFO, "Bus storing value ", std::hex, value, " at TEST_FINISH address ", addr, " -> halting simulation.");
+    halted = true;
     return true;
   }
   throw Exception(ExceptionType::StoreAMOAccessFault, addr);

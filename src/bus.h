@@ -25,10 +25,15 @@ public:
   std::optional<uint64_t> load(uint64_t addr, uint64_t size);
   bool store(uint64_t addr, uint64_t size, uint64_t value);
 
+  bool is_halted() const { return halted; }
+
   Dram dram;
   std::unique_ptr<Uart> uart;
   Clint clint;
   Plic plic;
+
+private:
+  bool halted = false;
 };
 
 }

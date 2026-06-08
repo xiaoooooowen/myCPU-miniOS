@@ -2,6 +2,9 @@
 #include "uart.h"
 #include "printk.h"
 
+/* TEST_FINISH 设备地址：向此地址写入任意值通知模拟器停止运行 */
+#define TEST_FINISH 0x100000
+
 /*
  * sys_write() — 向控制台输出字符串
  *
@@ -39,6 +42,7 @@ static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
  */
 static void sys_exit(uint64_t code) {
     printk("\n--- System Exit (code=%ld) ---\n", (long)code);
+    *(volatile uint32_t *)TEST_FINISH = 0x5555;
     while (1)
         ;
 }

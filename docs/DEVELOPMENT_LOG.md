@@ -5,6 +5,258 @@
 
 ***
 
+## 2026-06-08 — 模块二：U 模式切换 & 模块三：用户态系统调用
+
+### 背景
+
+模块一实现了内核通过 MMIO 主动停机。模块二和三的目标是实现 S 模式内核到 U 模式用户程序的切换，并让用户程序通过 ecall 调用系统调用。这是 MiniOS 从"裸机内核"迈向"多任务 OS"的关键一步。
+
+### 核心设计
+
+**模块二 — U 模式切换**：
+- 内核通过 `sret` 指令将 CPU mode 切换到 User（sstatus.SPP=0），PC 指向用户虚拟地址 0x10000
+- 需要构建独立的用户页表，映射用户代码页（0x10000，R|X|U）、用户栈页（0x20000，R|W|U）以及 TEST_FINISH MMIO（内核专用，U=0）
+
+**模块三 — 用户态系统调用**：
+- U 模式用户程序通过 `ecall` 触发 scause=8，进入 S 模式 trap handler
+- 实现 sys_write(64) 和 sys_exit(93) 两个最小系统调用
+- sys_exit 通过写入 TEST_FINISH 实现主动停机
+- 系统调用参数约定：a7=调用号，a0-a2=参数，返回值写入 trap frame 的 a0
+
+### 关键技术点
+
+#### 1. 用户页表构建与 MMIO 映射
+
+用户页表使用四级 Sv39：
+
+```
+L2 (根) → L1_MMIO → L0_USER → [用户代码页, 用户栈页, TEST_FINISH]
+```
+
+- `l0_user[16]`：映射 VA 0x10000 → 用户代码页（U=1, R|X），用户可读可执行
+- `l0_user[32]`：映射 VA 0x20000 → 用户栈页（U=1, R|W），用户可读写
+- `l0_user[256]`：映射 VA 0x100000 → TEST_FINISH（U=0, R|W），仅内核可访问
+- `kernel_l1_mmio[0]` 从 2MB 大页切换到指向 l0_user 的非叶 PTE，实现细粒度映射
+
+#### 2. sret 进入用户模式
+
+`enter_user()` 设置 sstatus.SPP=0（User mode）、sstatus.SPIE=1（sret 后开中断）、sepc=USER_TEXT_VA(0x10000)，执行 sret 后 CPU 跳转到用户程序入口。
+
+#### 3. 4 字节对齐的关键性
+
+这是本次开发踩的最大的坑。用户程序编译后，`.string` 指令生成 18 字节（17 字符 + NUL），导致后续指令不在 4 字节边界上。RISC-V 无 C 扩展时所有指令必须 4 字节对齐。使用 `.align 4`（GAS 中 2^4=16 字节对齐）确保所有指令正确对齐。
+
+**错误的指令布局（无对齐）**：
+- ecall 在偏移 0x2a（42，非 4 字节对齐）
+- li a7,93 在偏移 0x2e（46，非 4 字节对齐）
+- 模拟器 fetch 时读取错位数据（0x08930000 vs 0x05d00893），触发 IllegalInstruction 异常
+
+**修复**：在 `.string` 后添加 `.align 4`（16 字节对齐），指令偏移变为 0x34/0x38，全部 4 字节对齐。
+
+#### 4. 位置无关代码（PIC）
+
+用户程序使用 `auipc + addi` 的 PC 相对寻址（`la` 伪指令），确保程序被复制到任意物理地址后仍能正确访问内嵌字符串。
+
+### 修改清单
+
+#### 1. os/kernel/user_entry.S — 用户程序入口
+
+**文件**：[os/kernel/user_entry.S](file:///home/xiaowen/projects/mycpu/os/kernel/user_entry.S)
+
+用户程序的核心逻辑（位置无关，编译到 .user_text 段）：
+```asm
+.section .user_text, "ax"
+.align 4
+user_entry:
+    j       2f
+1:  .string "Hello from user!\n"
+    .align 4
+2:  li      a7, 64              # SYS_WRITE
+    li      a0, 1               # fd = stdout
+    la      a1, 1b              # buf = msg (PC-relative)
+    li      a2, 17              # len = 17
+    ecall
+    li      a7, 93              # SYS_EXIT
+    li      a0, 0               # code = 0
+    ecall
+    j       .
+```
+
+#### 2. os/kernel/user.c — 用户模式初始化
+
+**文件**：[os/kernel/user.c](file:///home/xiaowen/projects/mycpu/os/kernel/user.c)
+
+- `user_init()`：分配物理页、构建用户页表、复制用户程序到用户页、更新 MMIO 页表为细粒度映射
+- `enter_user()`：设置 sstatus/sepc，通过 sret 跳转到用户模式
+
+#### 3. os/kernel/user.h — 用户模式头文件
+
+**文件**：[os/kernel/user.h](file:///home/xiaowen/projects/mycpu/os/kernel/user.h)
+
+声明 `user_init()` 和 `__attribute__((noreturn)) void enter_user(void)`。
+
+#### 4. os/kernel/vm.h & vm.c — 暴露全局页表指针
+
+**文件**：[os/kernel/vm.h](file:///home/xiaowen/projects/mycpu/os/kernel/vm.h), [os/kernel/vm.c](file:///home/xiaowen/projects/mycpu/os/kernel/vm.c)
+
+添加 `extern volatile uint64_t *kernel_l2, *kernel_l1_dram, *kernel_l1_mmio` 全局声明，vm_init() 末尾赋值，供 user_init 修改 MMIO 区域页表。
+
+#### 5. os/linker.ld — 添加 .user_text 段
+
+**文件**：[os/linker.ld](file:///home/xiaowen/projects/mycpu/os/linker.ld)
+
+在 .text 和 .rodata 之间插入 .user_text 段，定义 `_user_text_start` / `_user_text_end` 符号。
+
+#### 6. os/kernel/kernel.c — 集成用户模式演示
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+在系统调用测试之后、TEST_FINISH 之前添加 Phase 11（用户模式演示），调用 `user_init()` + `enter_user()`。
+
+#### 7. os/Makefile — 添加编译规则
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+添加 user.c 和 user_entry.S 的编译与链接规则。
+
+### 验证结果
+
+```
+MiniOS booting...
+... (Phase 1-8 正常) ...
+--- Phase 11: User Mode (U-Mode) Test ---
+User mode initialized
+Entering user mode...
+=== TRAP ===
+scause: 0x8        # ECALL from U-mode
+sepc:   0x10034
+  -> Environment call from U-mode
+Hello from user!   # sys_write(1, msg, 17) 输出
+=== TRAP END ===
+=== TRAP ===
+scause: 0x8        # 第二个 ECALL
+sepc:   0x10040
+  -> Environment call from U-mode
+
+--- System Exit (code=0) ---   # sys_exit(0) 成功停机
+```
+
+- 模拟器退出码 0（TEST_FINISH 正常停机）
+- 单元测试 88/88 全部通过
+
+### 经验笔记
+
+1. **`.align` 在 GAS 中的语义**：GAS for RISC-V 中 `.align N` 表示 2^N 字节对齐。`.align 2` = 4 字节，`.align 4` = 16 字节。`.string` 会自动 NUL 终止，但其长度不保证 4 字节对齐，必须显式对齐后续代码。
+2. **用户页表的 U 位控制**：非叶 PTE 的 U 位控制整个子树的用户可访问性。即使叶 PTE 设置了 U 位，如果上级非叶 PTE 的 U=0，用户访问仍会触发页异常（当前 MMU 尚未实现此检查，但不影响本次 demo）。
+3. **sret 的行为**：`sret` 执行 `PC = sepc, mode = sstatus.SPP`，同时设置 `SPP=User`（最低特权级）。进入用户模式后，只有 ecall 能回到 S 模式处理系统调用。
+4. **sepc 的推进**：对于 ecall 指令，trap handler 必须手动推进 sepc + 4，否则 sret 后 PC 指向 ecall 指令本身，形成无限循环。
+
+***
+
+## 2026-06-08 — 模块一：主动退出与演示闭环
+
+### 背景
+
+MiniOS 从阶段 1 到阶段 10 完成后，内核在抢占式调度无限循环中运行，只能通过外部 `timeout` 终止模拟器。需要实现一种机制让 MiniOS 能主动通知模拟器停止运行，形成完整的演示闭环。
+
+### 核心设计
+
+引入一个简单的 **TEST_FINISH MMIO 设备**，地址 `0x100000`：
+
+- 模拟器侧：Bus 路由该地址，内核写入任意值后设置 `halted` 标志，主循环检测到标志后退出
+- 内核侧：`sys_exit()` 向该地址写入 magic value，然后进入死循环作为保底
+
+这比在 main.cpp 中硬编码特殊指令检测更干净——它是一个真正的 MMIO 设备，有明确的地址空间和 load/store 语义。
+
+### 修改清单
+
+#### 1. src/param.h — 新增 TEST_FINISH 地址常量
+
+**文件**：[src/param.h](file:///home/xiaowen/projects/mycpu/src/param.h#L163-L167)
+
+```cpp
+constexpr uint64_t TEST_FINISH = 0x100000;
+constexpr uint64_t TEST_FINISH_SIZE = 0x100;
+constexpr uint64_t TEST_FINISH_END = TEST_FINISH + TEST_FINISH_SIZE - 1;
+```
+
+选 `0x100000` 的原因：在 MMIO 区域（vpn2=0），位于 CLINT(0x02000000) 之前，不与现有外设冲突。
+
+#### 2. src/bus.h / src/bus.cpp — halted 标志与路由
+
+**文件**：[src/bus.h](file:///home/xiaowen/projects/mycpu/src/bus.h#L29-L36), [src/bus.cpp](file:///home/xiaowen/projects/mycpu/src/bus.cpp#L40-L43)
+
+**Bus 新增**：
+- `bool halted = false` 私有成员
+- `bool is_halted() const` 公开接口
+- `load(TEST_FINISH)` 返回 `halted ? 1 : 0`（内核可读取确认）
+- `store(TEST_FINISH)` 设置 `halted = true`
+
+#### 3. src/main.cpp — 主循环检测 halted 退出
+
+**文件**：[src/main.cpp](file:///home/xiaowen/projects/mycpu/src/main.cpp#L27-L31)
+
+```cpp
+if (cpu.bus.is_halted()) {
+    LOG(INFO, "Simulation halted by kernel.");
+    break;
+}
+```
+
+放在每轮循环开头，在 CLINT tick 之前检查。
+
+#### 4. os/kernel/syscall.c — sys_exit 写入 TEST_FINISH
+
+**文件**：[os/kernel/syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c#L6-L7)
+
+```c
+#define TEST_FINISH 0x100000
+static void sys_exit(uint64_t code) {
+    printk("\n--- System Exit (code=%ld) ---\n", (long)code);
+    *(volatile uint32_t *)TEST_FINISH = 0x5555;
+    while (1);  // 保底死循环
+}
+```
+
+写入 `0x5555`（`01010101 01010101`）作为 magic value，便于在日志中识别。
+
+#### 5. os/kernel/vm.c — 添加 TEST_FINISH 页表映射
+
+**文件**：[os/kernel/vm.c](file:///home/xiaowen/projects/mycpu/os/kernel/vm.c#L79-L84)
+
+```c
+l1_mmio[0] = PTE(0, PTE_V | PTE_R | PTE_W);
+```
+
+2MB 大页映射 `0x00000000-0x001FFFFF`，覆盖 TEST_FINISH 地址 `0x100000`。开 Sv39 分页后所有访存都经过 MMU，不映射此区域会触发 PageFault。
+
+### 验证
+
+```bash
+ctest --test-dir build_wsl   # 88/88 全部通过
+timeout 10 ./build_wsl/cemu os/build/kernel.bin
+```
+
+关键日志：
+```
+[INFO] Bus storing value 5555 at TEST_FINISH address 100000 -> halting simulation.
+[INFO] Simulation halted by kernel.
+```
+
+退出码 0（不再被 timeout kill）。
+
+### 经验笔记
+
+1. **MMIO 是模拟器与内核之间最简洁的通信机制**：不需要特殊指令、不需要修改 CPU 流水线、不需要在 main.cpp 中硬编码检测逻辑。只需要一个地址和一个 store 操作。
+
+2. **开启分页后，所有 MMIO 地址都需要页表映射**：TEST_FINISH 地址 `0x100000` 在启动页表的覆盖范围之外（vpn1=0 原本只有 CLINT/PLIC/UART 的映射），不添加 `l1_mmio[0]` 映射会导致内核写 TEST_FINISH 时触发 StorePageFault。这是一个典型的"新加外设却忘了映射"问题。
+
+3. **halted 标志的检测时机**：放在主循环顶部（CLINT tick 之前）最合理——一旦内核写入 TEST_FINISH，模拟器在当前指令执行完毕后、下一条指令取指前就会退出。不需要等到 CLINT 再 tick 一轮。
+
+4. **死循环作为保底**：`sys_exit` 先写 TEST_FINISH 再进死循环。如果由于某种原因（如模拟器 bug）halted 检测失败，死循环会防止内核执行到不该执行的代码区域。这是防御性编程。
+
+***
+
 ## 2026-06-04 — 阶段 10：虚拟内存与 Sv39 页表
 
 ### 背景

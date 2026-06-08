@@ -159,4 +159,9 @@ constexpr uint8_t MASK_UART_LSR_RX = 1;
 
 // 发送寄存器空
 constexpr uint8_t MASK_UART_LSR_TX = 1 << 5;
+
+// 测试设备：内核向此地址写入任意值即触发模拟器退出
+constexpr uint64_t TEST_FINISH = 0x100000;
+constexpr uint64_t TEST_FINISH_SIZE = 0x100;
+constexpr uint64_t TEST_FINISH_END = TEST_FINISH + TEST_FINISH_SIZE - 1;
 }

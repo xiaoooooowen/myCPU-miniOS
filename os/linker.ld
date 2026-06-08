@@ -17,6 +17,12 @@ SECTIONS
         *(.text)
     } > ram
 
+    .user_text : {
+        _user_text_start = .;
+        *(.user_text)
+        _user_text_end = .;
+    } > ram
+
     .rodata : {
         *(.rodata)
     } > ram

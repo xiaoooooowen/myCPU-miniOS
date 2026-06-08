@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-06-04
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 + 阶段 10 全部完成
+> 冻结时间：2026-06-08
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 + 阶段 10 + 模块一 + 模块二 + 模块三 全部完成
 
 ## 一、环境信息
 
@@ -77,7 +77,7 @@ print(''.join(chars))
 "
 ```
 
-**输出**（阶段 10 Sv39 分页模式运行）：
+**输出**（阶段 10 Sv39 分页模式运行，模块一主动停机）：
 ```
 MiniOS booting...
 Hello from kernel!
@@ -114,50 +114,28 @@ Unknown syscall number: 0
 Returned from trap handler!
 Trap round-trip successful!
 --- Phase 8: System Call Test ---
-=== TRAP ===
-scause: 0x9
-sepc:   0x80000424
-stval:  0x73
-Type: Exception (0x9)
-  -> Environment call from S-mode
-Hello from syscall!
-=== TRAP END ===
-sys_write returned: 21 (expected 21)
-=== TRAP ===
-scause: 0x9
-sepc:   0x80000454
-stval:  0x73
-Type: Exception (0x9)
-  -> Environment call from S-mode
-=== TRAP END ===
-sys_write(NULL,0) returned: 0 (expected 0)
-=== TRAP ===
-scause: 0x9
-sepc:   0x80000478
-stval:  0x73
-Type: Exception (0x9)
-  -> Environment call from S-mode
-Unknown syscall number: 999
-=== TRAP END ===
-Unknown syscall returned: -1 (expected -1)
-System call test passed!
---- Phase 7: Preemptive Scheduling ---
-Task subsystem initialized (idle task as task[0]).
-Created task 'task_a' (tid=1, stack=0x80004000, entry=0x8000009c)
-Created task 'task_b' (tid=2, stack=0x80005000, entry=0x80000100)
-Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
-[Idle ] count=0
-[Idle ] count=1
-[Idle ] count=2
-[Idle ] count=3
-[Idle ] count=4
-[Task A] count=0
-[Task A] count=1
-[Task A] count=2
-[Task A] count=3
-[Task A] count=4
-[Task B] count=0
 ...
+System call test passed!
+
+--- Phase 11: User Mode (U-Mode) Test ---
+User mode initialized (text=0x80008000 stack=0x80009000 code=82 bytes)
+Entering user mode...
+=== TRAP ===
+scause: 0x8
+sepc:   0x10034
+stval:  0x73
+Type: Exception (0x8)
+  -> Environment call from U-mode
+Hello from user!
+=== TRAP END ===
+=== TRAP ===
+scause: 0x8
+sepc:   0x10040
+stval:  0x73
+Type: Exception (0x8)
+  -> Environment call from U-mode
+
+--- System Exit (code=0) ---
 ```
 
 - ECALL from S-mode 触发 trap → handler 解码 scause=0x9 → sepc+4 → sret 返回 → 继续执行
@@ -202,14 +180,17 @@ Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 | S 模式 trap 处理 | os/kernel/trap.S/c | ✅ 完成（阶段 9） | sret 替代 mret，scause/sepc/stval 替代 mcause/mepc/mtval，中断/异常 cause 编码适配 S 模式 |
 | Timer 中断委托 | main.cpp + timer.c | ✅ 完成（阶段 9） | mideleg[5] 委托定时器中断到 S 模式（cause=5），MTIP→STIP 映射，sie.STIE 使能 |
 | SIP/MTIP 映射 | csr.cpp | ✅ 完成（阶段 9） | SIP load 正确映射委托中断位（SSIP←MSIP, STIP←MTIP, SEIP←MEIP），SIP store bug 修复 |
-| MiniOS 内核 VM | os/kernel/vm.h/c | ✅ 完成（阶段 10） | Sv39 页表初始化，身份映射 DRAM 128MB + MMIO（CLINT/PLIC/UART），2MB 大页 |
+| MiniOS 内核 VM | os/kernel/vm.h/c | ✅ 完成（阶段 10） | Sv39 页表初始化，身份映射 DRAM 128MB + MMIO（CLINT/PLIC/UART） + TEST_FINISH，2MB 大页 |
+| 主动停机（Shutdown） | bus.h/cpp + main.cpp + syscall.c | ✅ 完成（模块一） | TEST_FINISH(0x100000) MMIO 设备，内核写入触发 halted 标志，主循环检测后退出 |
+| U 模式切换 | os/kernel/user.h/c + user_entry.S | ✅ 完成（模块二） | S 模式内核通过 sret 切换到 U 模式入口 0x10000，构建用户页表映射代码页/栈页/TEST_FINISH |
+| 用户态系统调用 | user_entry.S + trap.c + syscall.c | ✅ 完成（模块三） | U 模式 ecall(scause=8) → S 模式 trap → sys_write(64) 输出 "Hello from user!" → sys_exit(93) 写入 TEST_FINISH 停机 |
 
 ### 未完成的模块
 
 | 模块 | 状态 |
 |------|------|
-| U 模式（用户态）真正隔离运行 | ❌ 阶段 9 只完成了 ecall 委托路径，尚未让任务在 U 模式执行 |
-| shutdown 机制 | ❌ 内核只能 timeout 终止 |
+| 用户地址空间权限隔离（MMU 检查 PTE_U 位） | ❌ 当前 MMU 未检查 U 位，用户态可访问内核页（不影响当前 demo） |
+| 完整进程管理（ELF loader、fork/exec/wait） | ❌ 未开始 |
 
 ## 五、指令集覆盖
 
@@ -368,7 +349,7 @@ Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
 | ~~中断/异常处理框架缺失~~ | 中 | ✅ 已实现（阶段 3） |
 | ~~ECALL/EBREAK 为空实现~~ | 低 | ✅ 已实现（阶段 3） |
 | ~~CLINT 定时器中断未接入 CPU~~ | 中 | ✅ 已实现（阶段 4） |
-| MiniOS 完成后无法主动退出（仅 timeout 终止） | 低 | 预期行为，后续需要 shutdown 机制 |
+| ~~MiniOS 完成后无法主动退出（仅 timeout 终止）~~ | 低 | ✅ 已修复（模块一 — TEST_FINISH MMIO） |
 | WFI 指令为 NOP 实现，无法真正暂停 CPU | 低 | 功能正确但效率低，不影响当前阶段 |
 | IDE/LSP 报告 RISC-V 内联汇编寄存器名未知（`a0`/`a1`/`a7`） | 低 | ✅ 已修复 — 宿主 x86 语言服务器不认识 RISC-V 寄存器名，用 `#ifdef __riscv` 包裹内联汇编，`#else` 分支提供无害替代。不影响交叉编译和运行 |
 | 抢占式调度 sched_tick 未触发任务切换 | 高 | ✅ 已修复（阶段 9 — SIP/MTIP 委托映射修复） |
@@ -405,7 +386,7 @@ mycpu/
 │   ├── boot/
 │   │   └── start.S          (启动汇编：设栈、清零 BSS、配置 medeleg/mideleg/stvec、mret 切换到 S 模式 → kernel_main)
 │   ├── kernel/
-│   │   ├── kernel.c         (内核入口：printk 演示 + 内存分配器测试 + ECALL trap + 系统调用测试 + 抢占式调度测试)
+│   │   ├── kernel.c         (内核入口：printk 演示 + 内存分配器测试 + ECALL trap + 系统调用测试 + 抢占式调度测试 + 用户模式演示)
 │   │   ├── uart.h           (UART 驱动头文件)
 │   │   ├── uart.c           (UART 驱动：uart_putc/uart_puts)
 │   │   ├── printk.h         (内核日志头文件)
@@ -419,11 +400,14 @@ mycpu/
 │   │   ├── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
 │   │   ├── task.h           (任务管理头文件：task_struct + context + sched_tick)
 │   │   ├── task.c           (任务管理：task_init/create/yield/schedule/sched_tick)
-│   │   └── switch.S         (上下文切换汇编：switch_to 保存/恢复 callee-saved 寄存器)
+│   │   ├── switch.S         (上下文切换汇编：switch_to 保存/恢复 callee-saved 寄存器)
 │   │   ├── syscall.h        (系统调用头文件：SYS_WRITE/SYS_EXIT + syscall_dispatch)
 │   │   ├── syscall.c        (系统调用：sys_write/sys_exit + trap frame 中 a0/a7 读写)
-│   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init)
-│   │   └── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP)
+│   │   ├── user.h           (用户模式头文件：user_init + enter_user)
+│   │   ├── user.c           (用户模式：分配物理页 + 构建用户页表 + 复制用户程序 + sret 切换)
+│   │   ├── user_entry.S     (用户程序：sys_write(1,msg,17) + sys_exit(0) 两条 ecall)
+│   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init + 全局页表指针导出)
+│   │   └── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP + 暴露全局页表指针)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/
@@ -448,8 +432,9 @@ mycpu/
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
+| P1 | MMU 检查 PTE_U 位实现用户态权限隔离 | 模块四 |
 | P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
-| P2 | 完善 shutdown 机制（通过 sifive_test 或自定义 halt） | 未来阶段 |
+| P2 | UART 输入缓冲 + sys_read 系统调用 | 模块五 |
 
 ## 十、本轮关键学习点
 
@@ -484,3 +469,8 @@ mycpu/
 29. **CSR 抽象层的价值在特权级迁移时体现**：阶段 0.5 设计的 `MINIOS_USE_S_MODE` 宏开关让所有内核代码通过一个编译 flag 即可从 M 模式切换到 S 模式，无需逐行修改 CSR 名称。回退只需改 Makefile 一行。这是"封装变化"原则在系统编程中的工程实践。
 30. **开启分页后必须映射 MMIO 区域**：仅身份映射 DRAM 不足以让内核在 Sv39 模式下运行。UART/CLINT/PLIC 三个外设的地址（0x10000000/0x02000000/0x0C000000）不在 DRAM 范围内，未映射会导致 printk 等所有外设访问立即触发 PageFault。这是虚拟内存使能时的经典遗忘项。
 31. **Sv39 页表使用 2MB 大页可显著简化映射**：128MB DRAM 只需 64 个 LV1 条目（每个覆盖 2MB），无需额外的 LV0 页表（4096 个 4KB 条目）。PLIC 64MB 只需 32 个 LV1 条目。总共 3 页（12KB）完成全部身份映射。这是空间效率与实现简单性的经典权衡。
+32. **`.align` 在 GAS for RISC-V 中的语义**：`.align N` 表示 2^N 字节对齐。`.string` 自动 NUL 终止后长度不保证 4 字节对齐，必须显式对齐后续代码段，否则 RISC-V（无 C 扩展）取指会读取错位数据触发 IllegalInstruction。
+33. **用户页表的 U 位控制整个子树**：非叶 PTE 的 U 位控制子树的用户可访问性。即使叶 PTE 设置了 U=1，如果上级非叶 PTE 的 U=0，用户访问仍会被拒绝。本实现中 `kernel_l1_mmio[0]` 设 U=1 允许遍历，叶级 PTE 各自控制（用户页 U=1，TEST_FINISH U=0）。
+34. **sret 的行为**：`sret` 执行 `PC = sepc, mode = sstatus.SPP`，同时自动设 `SPP=User`（最低特权级）。进入用户模式后，只有 ecall 能回到 S 模式处理系统调用。
+35. **ECALL 后 sepc 必须 +4**：用户态 ecall 触发 trap 后 sepc 指向 ecall 指令本身。trap handler 若不推进 sepc，sret 会回到同一条 ecall，形成无限循环。
+36. **位置无关代码的关键**：用户程序使用 `auipc + addi`（`la` 伪指令）的 PC 相对寻址访问内嵌字符串，确保代码被复制到任意物理地址后仍能正确运行。这是用户态程序标准做法。

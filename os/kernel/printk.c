@@ -8,7 +8,7 @@ static void print_hex(uint64_t val) {
     const char hex[] = "0123456789abcdef";
     uart_putc('0');
     uart_putc('x');
-    int leading = 1;
+    int leading = 1;        //状态位，标识这一个数字是否为0，初始为1
     for (int i = 15; i >= 0; i--) {
         char c = hex[(val >> (i * 4)) & 0xf];
         if (c != '0') leading = 0;
@@ -38,6 +38,24 @@ static void print_dec(uint32_t val) {
     }
 }
 
+/*
+ * printk - 内核格式化打印函数（printf 的裸机重写版）
+ *
+ * 支持的格式说明符:
+ *   %s  - 字符串
+ *   %d  - 有符号十进制整数 (int)
+ *   %u  - 无符号十进制整数 (unsigned int)
+ *   %x  - 十六进制 (uint32_t)，自动加 0x 前缀
+ *   %lx - 长整型十六进制 (uint64_t)
+ *   %ld - 有符号长整型十进制 (long)
+ *   %c  - 单字符
+ *   %%  - 输出字面百分号
+ *
+ * 已知限制:
+ *   %ld 内部调用 print_dec((uint32_t)ld)，会将 64 位 long 截断为 32 位。
+ *   超过 4294967295 的值会被截断，因为 print_dec 只实现 32 位查表减法，
+ *   未支持 64 位十进制输出。内核实际使用中极少触发此问题（大整数通常用 %lx）。
+ */
 void printk(const char* fmt, ...) {
     __builtin_va_list args;
     __builtin_va_start(args, fmt);
