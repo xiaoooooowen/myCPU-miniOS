@@ -6,6 +6,7 @@
 #include "timer.h"
 #include "trap.h"
 #include "user.h"
+#include "ramfs.h"
 #include "../include/csr.h"
 
 /* Phase 7 抢占式调度测试任务：不调用 yield()，纯靠定时器中断切换 */
@@ -25,6 +26,45 @@ static void task_b(void) {
         for (volatile int i = 0; i < 1000; i++)
             ;
     }
+}
+
+/* 模块六：短生命期任务 - 进入 U 模式后退出 */
+static void user_task_entry(void) {
+    user_init();
+    printk("[UserTask] Entering user mode...\n");
+    enter_user();
+    /* enter_user 不返回，用户程序通过 sys_exit 退出 */
+}
+
+/* 模块六：有限次循环后调用 sys_exit 退出的任务 */
+static void short_lived_task(void) {
+    int count = 0;
+    while (count < 3) {
+        printk("[ShortTask] count=%d\n", count++);
+        for (volatile int i = 0; i < 2000; i++)
+            ;
+    }
+
+    /* 通过 ecall 调用 sys_exit(42) */
+    uint64_t ret;
+#ifdef __riscv
+    __asm__ volatile(
+        "li a7, 93\n"       /* SYS_EXIT */
+        "li a0, 42\n"       /* exit code */
+        "ecall\n"
+        "mv %0, a0\n"
+        : "=r"(ret)
+        :
+        : "a0", "a7"
+    );
+#else
+    ret = 0;
+#endif
+    printk("[ShortTask] sys_exit returned: %ld (should not print)\n",
+           (long)ret);
+    /* 不应到达此处 */
+    while (1)
+        ;
 }
 
 void kernel_main(void) {
@@ -156,21 +196,87 @@ void kernel_main(void) {
     }
     printk("System call test passed!\n");
 
-    /* 模块二 + 模块三：U 模式用户态演示 */
+    /*
+     * 模块二 + 模块三：U 模式用户态演示（无任务上下文，sys_exit 直接停机）
+     *
+     * 此路径在 task_init() 之前运行，current 为 NULL，
+     * sys_exit 直接触发 TEST_FINISH 停机。
+     * 如需回归测试模块二/三，取消下面三行的注释并注释 Phase 12 块。
+     */
+#if 0
     printk("\n--- Phase 11: User Mode (U-Mode) Test ---\n");
     user_init();
     printk("Entering user mode...\n");
     enter_user();
-    /* enter_user() 通过 sret 切换到 U 模式，不会返回 */
+    /* enter_user() 通过 sret 切换到 U 模式，用户程序通过 sys_exit 停机 */
+#endif
 
-    /* 模块一验证：主动停机 — 在调度启动前，确保 TEST_FINISH 机制可用 */
-    printk("\n--- Halting via TEST_FINISH ---\n");
-    *(volatile uint32_t *)0x100000 = 0x5555;
+    /* 模块七：RAMFS 最小版测试 */
+    printk("\n--- Phase 13: RAMFS Test ---\n");
+    ramfs_init();
+
+    /* 创建 3 个文件 */
+    int fd_a = ramfs_create("file_a");
+    int fd_b = ramfs_create("file_b");
+    int fd_c = ramfs_create("log");
+    printk("Created fds: %d, %d, %d\n", fd_a, fd_b, fd_c);
+
+    /* 向 file_a 写入数据并读回验证 */
+    const char *data1 = "Hello RAMFS!";
+    int w1 = ramfs_write(fd_a, data1, 12);
+    printk("Write %d bytes to fd_a\n", w1);
+
+    char rbuf[32] = {0};
+    int r1 = ramfs_read(fd_a, rbuf, sizeof(rbuf));
+    rbuf[r1] = '\0';
+    printk("Read from fd_a: '%s' (%d bytes)\n", rbuf, r1);
+
+    /* 向 file_b 写入并读回 */
+    const char *data2 = "MiniOS Kernel";
+    int w2 = ramfs_write(fd_b, data2, 13);
+    printk("Write %d bytes to fd_b\n", w2);
+
+    char rbuf2[32] = {0};
+    int r2 = ramfs_read(fd_b, rbuf2, sizeof(rbuf2));
+    rbuf2[r2] = '\0';
+    printk("Read from fd_b: '%s' (%d bytes)\n", rbuf2, r2);
+
+    /* 关闭 file_a */
+    ramfs_close(fd_a);
+
+    /* 验证关闭后无法读写 */
+    int r3 = ramfs_read(fd_a, rbuf, sizeof(rbuf));
+    printk("Read from closed fd_a: %d (expected -1)\n", r3);
+
+    /* 再次创建 file_a — 可以复用槽位 */
+    int fd_a2 = ramfs_create("file_a2");
+    const char *data3 = "Reopen OK";
+    ramfs_write(fd_a2, data3, 9);
+    char rbuf3[32] = {0};
+    int r4 = ramfs_read(fd_a2, rbuf3, sizeof(rbuf3));
+    rbuf3[r4] = '\0';
+    printk("Read from fd_a2: '%s' (%d bytes)\n", rbuf3, r4);
+
+    ramfs_close(fd_a2);
+    ramfs_close(fd_b);
+    ramfs_close(fd_c);
+    printk("RAMFS test passed!\n");
+
+    /* 模块六：任务状态与 exit/wait 雏形 */
+    printk("\n--- Phase 12: Task State & exit/wait Test ---\n");
 
     task_init();
+    printk("Creating tasks...\n");
 
+    /*
+     * 创建 3 个任务：
+     *   task_a        — 持续运行的循环任务（不会退出）
+     *   user_task     — 进入 U 模式后通过 sys_exit 退出
+     *   short_lived   — 循环 3 次后通过 ecall sys_exit 退出
+     */
     task_create(task_a, "task_a");
-    task_create(task_b, "task_b");
+    task_create(user_task_entry, "user_task");
+    task_create(short_lived_task, "short_lived");
 
     /* 使能 S 模式全局中断 + 启动定时器中断 — 周期性触发抢占式调度 */
     local_irq_enable();
@@ -179,10 +285,37 @@ void kernel_main(void) {
     /* 进入抢占式调度，静默定时器中断的 trap 输出噪音 */
     trap_set_silent(1);
 
+    printk("Entering idle loop (will reap zombies)...\n");
+
     int idle_count = 0;
+    int reap_count = 0;
     while (1) {
-        printk("[Idle ] count=%d\n", idle_count++);
+        printk("[Idle] count=%d\n", idle_count++);
         for (volatile int i = 0; i < 1000; i++)
             ;
+
+        /* 回收已退出的 ZOMBIE 子任务 */
+        int tid = task_wait();
+        if (tid >= 0) {
+            printk("[Idle] Reaped zombie task %d\n", tid);
+            reap_count++;
+        }
+
+        /* 回收了 2 个僵尸任务（user_task + short_lived）后主动停机 */
+        if (reap_count >= 2) {
+            printk("\n--- All zombies reaped, halting ---\n");
+            *(volatile uint32_t *)0x100000 = 0x5555;
+            while (1)
+                ;
+        }
+
+        /* 安全网：idle 运行 50 次后强制停机 */
+        if (idle_count >= 50) {
+            printk("\n--- Idle timeout, halting ---\n");
+            *(volatile uint32_t *)0x100000 = 0x5555;
+            while (1)
+                ;
+        }
     }
 }
+

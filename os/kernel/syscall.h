@@ -14,8 +14,11 @@
  */
 
 #define SYS_EXIT    93    /* 退出/停机 */
-#define SYS_WRITE   64    /* 向控制台输出字符串 */
-#define SYS_READ    63    /* 从控制台读取字符（单字符，阻塞） */
+#define SYS_WRITE   64    /* 向控制台或文件输出 */
+#define SYS_READ    63    /* 从控制台或文件读取 */
+#define SYS_WAIT    95    /* 回收 ZOMBIE 子任务 */
+#define SYS_OPEN    56    /* 创建 RAMFS 文件，返回 fd */
+#define SYS_CLOSE   57    /* 关闭 RAMFS 文件 */
 
 /*
  * syscall_dispatch() — 系统调用分派函数

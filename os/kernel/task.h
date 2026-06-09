@@ -11,6 +11,8 @@ enum task_state {
     TASK_UNUSED = 0,
     TASK_READY,
     TASK_RUNNING,
+    TASK_BLOCKED,
+    TASK_ZOMBIE,
 };
 
 /*
@@ -45,6 +47,7 @@ struct task {
     struct context ctx;             /* callee-saved 上下文 */
     void          *stack;           /* 内核栈基址 (kalloc 分配的页) */
     int            state;           /* 任务状态 */
+    int            parent;          /* 父任务索引，-1 表示无父任务 */
     const char    *name;            /* 调试名称 */
 };
 
@@ -62,5 +65,14 @@ void sched_tick(uint64_t *trap_frame);
 
 /* 上下文切换（汇编实现） */
 void switch_to(struct context *prev, struct context *next);
+
+/* 将当前任务标记为 ZOMBIE（由 sys_exit 调用） */
+void task_exit(void);
+
+/* 回收一个 ZOMBIE 子任务，返回其 tid，没有则返回 -1 */
+int  task_wait(void);
+
+/* 获取当前任务状态（由 trap_handler 检查是否需要重调度） */
+int  task_current_state(void);
 
 #endif /* MINIOS_TASK_H */

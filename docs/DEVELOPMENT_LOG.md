@@ -5,6 +5,137 @@
 
 ***
 
+## 2026-06-09 — 模块六：任务状态与 exit/wait 雏形 & 模块七：RAMFS 最小版
+
+### 背景
+
+模块五完成后，MiniOS 已具备 U 模式、系统调用、UART 输入输出和权限隔离能力。但还存在两个关键缺口：
+1. **调度器只支持无限循环任务**：已完成的任务没有 ZOMBIE 状态，退出后仍被调度
+2. **缺少文件系统雏形**：系统调用全部基于 UART，没有文件抽象
+
+### 模块六：任务状态与 exit/wait 雏形
+
+#### 核心改动
+
+**task.h — 新增状态和接口**（[task.h](file:///home/xiaowen/projects/mycpu/os/kernel/task.h)）：
+- 增加 `TASK_BLOCKED`、`TASK_ZOMBIE` 状态
+- `struct task` 增加 `int parent` 字段（记录父任务索引）
+- 新增 `task_exit()`、`task_wait()`、`task_current_state()` 声明
+
+**task.c — 实现退出和回收逻辑**（[task.c](file:///home/xiaowen/projects/mycpu/os/kernel/task.c)）：
+- `task_exit()`：将当前任务标记为 TASK_ZOMBIE（不释放内核栈）
+- `task_wait()`：遍历任务表，找到第一个属于当前任务的 ZOMBIE 子任务，释放其内核栈并标记为 TASK_UNUSED
+- `task_current_state()`：返回当前任务状态
+- 现有调度器 `schedule()` 已有跳过非 READY/RUNNING 任务的逻辑
+
+**syscall.c — 修改 sys_exit 语义**（[syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c)）：
+- `sys_exit()` 改为先调用 `task_exit()` 标记 ZOMBIE，若 current 为 NULL 则直接 TEST_FINISH 停机
+- 新增 `sys_wait()`：封装 `task_wait()`，返回被回收任务 tid 或 -1
+
+**trap.c — ECALL 退出后触发重调度**（[trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)）：
+- ECALL 异常处理后检查 `task_current_state() == TASK_ZOMBIE`
+- 若为 ZOMBIE，调用 `sched_tick(tf)` 切换到下一个就绪任务
+- 引入 `rescheduled` 标志避免 `epc+4` 覆盖 sched_tick 设置的 sepc
+
+**踩坑记录**：
+
+1. **U 模式 ecall 退出后的特权级陷阱**：用户任务从 U 模式通过 ecall 进入 S 模式 trap handler，`sstatus.SPP` 被硬件设为 User（0）。trap_handler 触发重调度后执行 sret，CPU 切换到 U 模式运行下一个内核任务——导致内核任务在 U 模式执行，触发各种异常。**修复**：trap_handler 检测重调度 + cause=8（U 模式 ECALL）时手动设置 `sstatus.SPP=1`，确保下一个任务运行在 Supervisor 模式。
+
+2. **epc+4 与 sched_tick 的竞态**：trap_handler 在异常末尾无条件执行 `trap_epc_write(epc + 4)`。但 sched_tick 已将 sepc 改为新任务的入口地址，如果再 +4 会跳过新任务的第一条指令。**修复**：引入 `rescheduled` 标志，仅在未重调度时推进 epc。
+
+#### 验证
+
+```text
+[UserTask] Entering user mode...
+=== TRAP ===
+scause: 0x8
+  -> Environment call from U-mode
+Hello from user!
+=== TRAP END ===
+
+--- Task Exit (code=0) ---
+=== TRAP END ===
+[ShortTask] count=0
+task_wait: reaped 'user_task' (tid=2)
+[Idle] Reaped zombie task 2
+[Idle] count=5
+[Task A] count=5
+[ShortTask] count=1
+...
+```
+
+- user_task 进入 U 模式 → sys_write 输出 → sys_exit 标记 ZOMBIE → 重调度
+- idle 通过 task_wait 回收 ZOMBIE 子任务（释放内核栈）
+- task_a 和 short_lived_task 在退出任务后继续正常运行
+- 91/91 单元测试全部通过
+
+### 模块七：RAMFS 最小版
+
+#### 核心设计
+
+固定大小内存文件表，不作磁盘、不作 mkfs、不作复杂目录树。
+
+```c
+struct ramfs_file {
+    char     name[32];
+    char     data[4096];
+    uint64_t size;
+    int      used;
+};
+```
+
+- 8 个文件槽位，每个 4096 字节
+- fd 编码：0=stdin, 1=stdout, >=2=RAMFS 文件（fd=槽位索引+2）
+
+#### 涉及文件
+
+**ramfs.h/c — 新建**（[ramfs.h](file:///home/xiaowen/projects/mycpu/os/kernel/ramfs.h), [ramfs.c](file:///home/xiaowen/projects/mycpu/os/kernel/ramfs.c)）：
+- `ramfs_init()`：清零所有槽位
+- `ramfs_create(name)`：找空闲槽位，复制文件名，返回 fd
+- `ramfs_write(fd, buf, len)`：截断到 4096 字节，写入 data 并更新 size
+- `ramfs_read(fd, buf, len)`：截断到文件实际 size，复制数据
+- `ramfs_close(fd)`：释放槽位
+
+**syscall.h — 新系统调用**（[syscall.h](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.h)）：
+- `SYS_OPEN(56)`、`SYS_CLOSE(57)`
+
+**syscall.c — fd 分派**（[syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c)）：
+- `sys_write`：fd=1 → UART 控制台输出，fd>=2 → ramfs_write
+- `sys_read`：fd=0 → UART 阻塞输入，fd>=2 → ramfs_read
+- 新增 `sys_open(name, flags)` 和 `sys_close(fd)`
+
+#### 验证
+
+```text
+--- Phase 13: RAMFS Test ---
+RAMFS initialized (8 files, 4096 bytes each)
+ramfs_create: 'file_a' -> fd=2
+ramfs_create: 'file_b' -> fd=3
+ramfs_create: 'log' -> fd=4
+Write 12 bytes to fd_a
+Read from fd_a: 'Hello RAMFS!' (12 bytes)
+Write 13 bytes to fd_b
+Read from fd_b: 'MiniOS Kernel' (13 bytes)
+ramfs_close: fd=2 closed
+Read from closed fd_a: -1 (expected -1)
+ramfs_create: 'file_a2' -> fd=2 (idx=0)  # 槽位复用
+Read from fd_a2: 'Reopen OK' (9 bytes)
+RAMFS test passed!
+```
+
+- 3 个文件创建、写入、读回全部正确
+- 关闭后读写返回 -1（错误处理正确）
+- 槽位复用正常
+- 91/91 单元测试全部通过
+
+### 经验笔记
+
+1. **ZOMBIE 是 UNIX 进程模型的核心**：进程退出后不立即释放 PCB，保留退出信息等待父进程通过 wait() 回收。MiniOS 的简化实现：task_exit 标 ZOMBIE → 调度器跳过 → 父任务通过 task_wait 回收内核栈。
+2. **特权级切换的陷阱**：U 模式 ecall 后 sstatus.SPP=User，触发重调度时必须手动恢复 SPP=Supervisor，否则 sret 会在错误特权级运行内核任务。
+3. **fd 的统一抽象**：fd=0/1 固定映射 stdin/stdout，fd>=2 映射 RAMFS。同一套 sys_write/sys_read 通过 fd 分派到不同后端，体现 UNIX "一切皆文件" 哲学。
+
+***
+
 ## 2026-06-09 — 模块四：用户地址空间权限隔离 & 模块五：UART 输入与 sys_read
 
 ### 背景

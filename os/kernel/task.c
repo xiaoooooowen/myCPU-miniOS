@@ -38,9 +38,10 @@ void task_init(void) {
     task_count = 0;
 
     /* task[0] 为初始 boot 任务，当前正在执行 */
-    tasks[0].state = TASK_RUNNING;
-    tasks[0].name  = "idle";
-    tasks[0].stack = NULL;  /* 使用启动栈 _stack_top */
+    tasks[0].state  = TASK_RUNNING;
+    tasks[0].name   = "idle";
+    tasks[0].stack  = NULL;  /* 使用启动栈 _stack_top */
+    tasks[0].parent = -1;
     current = &tasks[0];
     task_count = 1;
 
@@ -90,8 +91,9 @@ int task_create(void (*entry)(void), const char *name) {
     t->ctx.s10 = 0;
     t->ctx.s11 = 0;
 
-    t->state = TASK_READY;
-    t->name  = name;
+    t->state  = TASK_READY;
+    t->name   = name;
+    t->parent = (current != NULL) ? (int)(current - tasks) : -1;
     task_count++;
 
     printk("Created task '%s' (tid=%d, stack=%lx, entry=%lx)\n",
@@ -229,4 +231,60 @@ void sched_tick(uint64_t *tf) {
     tf[27] = next->ctx.s11;
 
     current = next;
+}
+
+/*
+ * task_exit() — 将当前任务标记为 ZOMBIE
+ *
+ * 由 sys_exit 调用。仅设置状态，实际的上下文切换
+ * 由 trap_handler 在返回前调用 sched_tick 完成。
+ */
+void task_exit(void) {
+    if (current == NULL)
+        return;
+    current->state = TASK_ZOMBIE;
+}
+
+/*
+ * task_wait() — 回收一个 ZOMBIE 子任务
+ *
+ * 遍历任务表，找到第一个属于当前任务的 ZOMBIE 子任务，
+ * 释放其内核栈并标记为 UNUSED。
+ *
+ * 返回：被回收任务的 tid，没有可回收的子任务则返回 -1。
+ */
+int task_wait(void) {
+    if (current == NULL)
+        return -1;
+
+    int parent_tid = (int)(current - tasks);
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state == TASK_ZOMBIE &&
+            tasks[i].parent == parent_tid) {
+            /* 释放内核栈 */
+            if (tasks[i].stack != NULL) {
+                kfree(tasks[i].stack);
+                tasks[i].stack = NULL;
+            }
+            tasks[i].state  = TASK_UNUSED;
+            tasks[i].parent = -1;
+            task_count--;
+            printk("task_wait: reaped '%s' (tid=%d)\n",
+                   tasks[i].name, i);
+            return i;
+        }
+    }
+    return -1;
+}
+
+/*
+ * task_current_state() — 获取当前任务状态
+ *
+ * 由 trap_handler 在 syscall_dispatch 后检查
+ * 当前任务是否已变为 ZOMBIE，以决定是否需要强制重调度。
+ */
+int task_current_state(void) {
+    if (current == NULL)
+        return TASK_UNUSED;
+    return current->state;
 }

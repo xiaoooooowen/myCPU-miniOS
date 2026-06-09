@@ -64,14 +64,25 @@ void trap_handler(uint64_t *tf) {
     printk("sepc:   %lx\n", epc);
     printk("stval:  %lx\n", tval);
     printk("Type: Exception (%lx)\n", cause);
+
+    int rescheduled = 0;  /* 是否已通过 sched_tick 切换上下文 */
+
     switch (cause) {
         case 8:
             printk("  -> Environment call from U-mode\n");
             syscall_dispatch(tf);
+            if (task_current_state() == TASK_ZOMBIE) {
+                sched_tick(tf);
+                rescheduled = 1;
+            }
             break;
         case 9:
             printk("  -> Environment call from S-mode\n");
             syscall_dispatch(tf);
+            if (task_current_state() == TASK_ZOMBIE) {
+                sched_tick(tf);
+                rescheduled = 1;
+            }
             break;
         case 3:
             printk("  -> Breakpoint\n");
@@ -86,8 +97,23 @@ void trap_handler(uint64_t *tf) {
 
     printk("=== TRAP END ===\n");
 
-    /* 异常：推进 sepc 跳过触发异常的指令 */
-    trap_epc_write(epc + 4);
+    /* 异常：推进 sepc 跳过触发异常的指令
+     * 注意：若已通过 sched_tick 重调度，sepc 已被设置为新任务的入口，
+     * 不应覆盖 */
+    if (!rescheduled) {
+        trap_epc_write(epc + 4);
+    }
+
+    /*
+     * 若因 U 模式 ecall 退出而触发重调度，需恢复 SPP=1，
+     * 确保下一个任务运行在 Supervisor 模式。
+     * S 模式 ecall 退出时 SPP 已是 1，无需处理。
+     */
+    if (rescheduled && cause == 8) {
+        uint64_t status = csr_read(sstatus);
+        status |= SSTATUS_SPP;
+        csr_write(sstatus, status);
+    }
 }
 
 /* 进入抢占式调度阶段后，静默定时器中断的 trap 输出 */
