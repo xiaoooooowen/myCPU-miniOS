@@ -12,7 +12,7 @@ bool Mmu::is_enabled() const {
   return (satp & SATP_MODE_SV39) == SATP_MODE_SV39;
 }
 
-uint64_t Mmu::translate(uint64_t vaddr, AccessType type) {
+uint64_t Mmu::translate(uint64_t vaddr, AccessType type, uint64_t mode) {
   if (!is_enabled()) {
     return vaddr;  // 未开启分页，直通物理地址
   }
@@ -75,6 +75,15 @@ uint64_t Mmu::translate(uint64_t vaddr, AccessType type) {
       throw Exception(ExceptionType::LoadPageFault, vaddr);
     if (type == AccessType::Store && !(pte & PTE_W))
       throw Exception(ExceptionType::StoreAMOPageFault, vaddr);
+    // 用户模式 U 位权限检查：U=0 页禁止用户态访问
+    if (mode == User && !(pte & PTE_U)) {
+      if (type == AccessType::Instruction)
+        throw Exception(ExceptionType::InstructionPageFault, vaddr);
+      else if (type == AccessType::Store)
+        throw Exception(ExceptionType::StoreAMOPageFault, vaddr);
+      else
+        throw Exception(ExceptionType::LoadPageFault, vaddr);
+    }
     // 设置 A/D 位
     uint64_t new_pte = pte | PTE_A;
     if (type == AccessType::Store)
@@ -100,6 +109,16 @@ uint64_t Mmu::translate(uint64_t vaddr, AccessType type) {
     throw Exception(ExceptionType::LoadPageFault, vaddr);
   if (type == AccessType::Store && !(pte & PTE_W))
     throw Exception(ExceptionType::StoreAMOPageFault, vaddr);
+
+  // 用户模式 U 位权限检查：U=0 页禁止用户态访问
+  if (mode == User && !(pte & PTE_U)) {
+    if (type == AccessType::Instruction)
+      throw Exception(ExceptionType::InstructionPageFault, vaddr);
+    else if (type == AccessType::Store)
+      throw Exception(ExceptionType::StoreAMOPageFault, vaddr);
+    else
+      throw Exception(ExceptionType::LoadPageFault, vaddr);
+  }
 
   // 设置 A/D 位
   uint64_t new_pte = pte | PTE_A;

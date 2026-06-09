@@ -17,3 +17,13 @@ void uart_puts(const char* s) {
         uart_putc(*s++);
     }
 }
+
+int uart_has_data(void) {
+    return (uart[UART_LSR] & UART_LSR_RX_READY) != 0;
+}
+
+char uart_getc(void) {
+    /* 轮询等待数据就绪 */
+    while (!uart_has_data()) { }
+    return (char)uart[UART_RHR];
+}

@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-06-08
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 + 阶段 10 + 模块一 + 模块二 + 模块三 全部完成
+> 冻结时间：2026-06-09
+> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 + 阶段 10 + 模块一 + 模块二 + 模块三 + 模块四 + 模块五 全部完成
 
 ## 一、环境信息
 
@@ -61,9 +61,9 @@ cd os && make
 | PLIC 测试 (PlicTest) | 13 | 13 | 0 | 0 |
 | CLINT 测试 (ClintTest) | 13 | 13 | 0 | 0 |
 | UART 测试 (UartTest) | 5 | 5 | 0 | 0 |
-| MMU 测试 (MmuTest) | 10 | 10 | 0 | 0 |
+| MMU 测试 (MmuTest) | 13 | 13 | 0 | 0 |
 | 自定义指令测试 | 2 | 2 | 0 | 0 |
-| **合计** | **88** | **88** | **0** | **0** |
+| **合计** | **91** | **91** | **0** | **0** |
 
 ### MiniOS 运行验证
 
@@ -184,12 +184,15 @@ Type: Exception (0x8)
 | 主动停机（Shutdown） | bus.h/cpp + main.cpp + syscall.c | ✅ 完成（模块一） | TEST_FINISH(0x100000) MMIO 设备，内核写入触发 halted 标志，主循环检测后退出 |
 | U 模式切换 | os/kernel/user.h/c + user_entry.S | ✅ 完成（模块二） | S 模式内核通过 sret 切换到 U 模式入口 0x10000，构建用户页表映射代码页/栈页/TEST_FINISH |
 | 用户态系统调用 | user_entry.S + trap.c + syscall.c | ✅ 完成（模块三） | U 模式 ecall(scause=8) → S 模式 trap → sys_write(64) 输出 "Hello from user!" → sys_exit(93) 写入 TEST_FINISH 停机 |
+| 用户地址空间权限隔离 | mmu.cpp + vm.c + vm.h + bus.h/cpp | ✅ 完成（模块四） | MMU translate 增加 mode 参数，U 位检查阻止用户态访问内核页（U=0），新增 3 个 MMU 测试，91/91 全通过 |
+| UART 输入与 sys_read | uart.c/h + syscall.c/h + bus.h/cpp + main.cpp | ✅ 完成（模块五） | 内核端 uart_getc()/uart_has_data()，SYS_READ(63) 支持单字符阻塞读取（遇换行符终止），stdin 监听改用 poll() 非阻塞 |
 
 ### 未完成的模块
 
 | 模块 | 状态 |
 |------|------|
-| 用户地址空间权限隔离（MMU 检查 PTE_U 位） | ❌ 当前 MMU 未检查 U 位，用户态可访问内核页（不影响当前 demo） |
+| 任务状态与 exit/wait 雏形 | ❌ 未开始 |
+| RAMFS 最小内存文件系统 | ❌ 未开始 |
 | 完整进程管理（ELF loader、fork/exec/wait） | ❌ 未开始 |
 
 ## 五、指令集覆盖

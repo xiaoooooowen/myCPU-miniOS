@@ -2,6 +2,8 @@
 
 #include "uart.h"
 #include <iostream>
+#include <unistd.h>
+#include <poll.h>
 #include "log.h"
 
 namespace cemu {
@@ -28,7 +30,21 @@ void Uart::start_stdin_listener() {
 
 void Uart::stdin_listener() {
   char byte;
-  while (stdin_running.load() && std::cin >> byte) {
+  while (stdin_running.load()) {
+    // 使用 poll 检查 stdin 是否有数据，超时 100ms
+    struct pollfd pfd;
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+    int ret = poll(&pfd, 1, 100);  // 100ms 超时
+    if (ret < 0) break;
+    if (ret == 0) continue;  // 超时，继续检查 stdin_running
+
+    if (!stdin_running.load()) break;
+
+    // 读取一个字符
+    ssize_t n = read(STDIN_FILENO, &byte, 1);
+    if (n <= 0) break;  // EOF 或错误
+
     std::unique_lock<std::mutex> lock(mtx);
     while (stdin_running.load() && (uart[UART_LSR] & MASK_UART_LSR_RX) == 1) {
       cv.wait(lock);

@@ -14,7 +14,8 @@ public:
   Mmu(Csr& csr, Dram& dram);
 
   // 翻译虚拟地址到物理地址，失败抛 PageFault 异常
-  uint64_t translate(uint64_t vaddr, AccessType type);
+  // mode: 当前 CPU 特权级（User=0, Supervisor=1, Machine=3），用于 U 位权限检查
+  uint64_t translate(uint64_t vaddr, AccessType type, uint64_t mode);
 
   // 检查 SATP 是否已开启分页
   bool is_enabled() const;

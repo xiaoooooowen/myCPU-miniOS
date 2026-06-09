@@ -12,17 +12,17 @@ namespace cemu {
 Cpu::~Cpu() = default;
 
 std::optional<uint64_t> Cpu::load(uint64_t addr, uint64_t size) {
-  uint64_t paddr = mmu.translate(addr, Mmu::AccessType::Load);
+  uint64_t paddr = mmu.translate(addr, Mmu::AccessType::Load, this->mode);
   return bus.load(paddr, size);
 }
 
 bool Cpu::store(uint64_t addr, uint64_t size, uint64_t value) {
-  uint64_t paddr = mmu.translate(addr, Mmu::AccessType::Store);
+  uint64_t paddr = mmu.translate(addr, Mmu::AccessType::Store, this->mode);
   return bus.store(paddr, size, value);
 }
 
 std::optional<uint32_t> Cpu::fetch() {
-  uint64_t paddr = mmu.translate(pc, Mmu::AccessType::Instruction);
+  uint64_t paddr = mmu.translate(pc, Mmu::AccessType::Instruction, this->mode);
   auto inst = bus.load(paddr, 32);
   if (inst.has_value()) {
     LOG(INFO, "Instruction fetched: ", std::hex, inst.value(), std::dec);

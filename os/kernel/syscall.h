@@ -15,6 +15,7 @@
 
 #define SYS_EXIT    93    /* 退出/停机 */
 #define SYS_WRITE   64    /* 向控制台输出字符串 */
+#define SYS_READ    63    /* 从控制台读取字符（单字符，阻塞） */
 
 /*
  * syscall_dispatch() — 系统调用分派函数

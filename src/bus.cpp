@@ -17,6 +17,10 @@ Bus::Bus(const std::vector<uint8_t>& code)
 
 Bus::~Bus() = default;
 
+void Bus::start_stdin() {
+  uart->start_stdin_listener();
+}
+
 Bus::Bus(Bus&&) = default;
 Bus& Bus::operator=(Bus&&) = default;
 

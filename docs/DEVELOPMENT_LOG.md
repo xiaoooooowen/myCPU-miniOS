@@ -5,6 +5,75 @@
 
 ***
 
+## 2026-06-09 — 模块四：用户地址空间权限隔离 & 模块五：UART 输入与 sys_read
+
+### 背景
+
+模块三完成后，U 模式用户程序可以正常执行 ecall 调用 sys_write/sys_exit。但存在两个关键缺口：
+1. **U 模式权限隔离不完整**：页表虽然设置了 U 位（用户页 U=1，TEST_FINISH U=0），但 MMU 未检查 U 位，导致 U 模式理论上可访问内核页。
+2. **缺少输入能力**：系统只能输出不能输入，无法实现交互。
+
+### 模块四：MMU U 位权限检查
+
+#### 核心改动
+
+**MMU translate() 增加 mode 参数**：
+- `src/mmu.h`：`translate(uint64_t vaddr, AccessType type, uint64_t mode)` — mode 为当前 CPU 特权级（User=0, Supervisor=1, Machine=3）
+- **2MB 大页叶节点**：在 R/W/X 权限检查后增加 U 位检查（`if (mode == User && !(pte & PTE_U))` — 抛对应页异常）
+- **4KB 叶节点**：同上
+
+**CPU 调用方更新**（`src/cpu.cpp`）：
+- `load()`/`store()`/`fetch()` 三处 `mmu.translate()` 调用均传入 `this->mode`
+
+**设计要点**：
+- 非叶节点不检查 U 位（RISC-V 规范规定非叶 U 位为保留位）
+- S/M 模式访问 U=0 页不受影响
+- U 模式访问 U=0 页触发对应类型页异常（LoadPageFault / StoreAMOPageFault / InstructionPageFault）
+
+#### 测试
+
+新增 3 个测试用例：
+- `UserModeCannotAccessSupervisorPage`：U 模式访问 U=0 页触发页异常，S/M 模式正常
+- `UserModeCanAccessUserPage`：U 模式正常访问 U=1 页
+- `UserModeMegapageUCheck`：2MB 大页的 U 位检查
+
+### 模块五：UART 输入与 sys_read
+
+#### 核心改动
+
+**内核端 UART 输入函数**（`os/kernel/uart.h/c`）：
+- `UART_RHR` / `UART_LSR_RX_READY` 寄存器定义
+- `uart_has_data()`：查询 LSR 寄存器的 RX 就绪位
+- `uart_getc()`：轮询阻塞读取一个字符
+
+**新系统调用**（`os/kernel/syscall.h/c`）：
+- `SYS_READ` (63)：从控制台读取字符
+- `sys_read(fd, buf, len)`：阻塞读取最多 len 个字符，遇换行符 \\n 提前终止
+- `syscall_dispatch()` 增加 `case SYS_READ` 分支
+
+**UART stdin 监听重构**（`src/uart.cpp`）：
+- 原实现 `std::cin >> byte` 阻塞导致进程无法干净退出
+- 改用 `poll(STDIN_FILENO, ..., 100ms)` + `read()` 非阻塞轮询
+- 进程退出时 stdin 线程可在 100ms 内响应 `stdin_running = false` 并退出
+
+**Stdin 监听启动**（`src/bus.h/cpp` + `src/main.cpp`）：
+- Bus 新增 `start_stdin()` 方法，在 main.cpp 中启动后调用
+- 单元测试环境不启动 stdin 监听（保持默认 false），避免挂起
+
+#### 设计要点
+
+- sys_read 为阻塞调用：用户程序调用后等待键盘输入，输入后继续执行
+- sys_read 支持两种终止条件：读满 len 个字符，或遇到 \\n（终端回车）
+- 当前不支持 `fd` 参数（仅控制台），后续可扩展
+
+### 验证结果
+
+- 单元测试：91/91 全通过（新增 3 个 MMU U 位测试）
+- MiniOS 端到端：输出完整（从 booting 到 System Exit），进程干净退出（exit code 0，不依赖 timeout）
+- 构建：cemu + MiniOS 无警告无错误
+
+***
+
 ## 2026-06-08 — 模块二：U 模式切换 & 模块三：用户态系统调用
 
 ### 背景

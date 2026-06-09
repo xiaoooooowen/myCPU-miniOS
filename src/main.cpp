@@ -22,6 +22,9 @@ int main(int argc, char* argv[]) {
   std::vector<uint8_t> code(std::istreambuf_iterator<char>(file), {});
   cemu::Cpu cpu(code); // 假设Cpu类的构造函数接受指令代码的vector
 
+  // 启动 UART 标准输入监听，用于 OS 运行时读取终端输入
+  cpu.bus.start_stdin();
+
   while (true) {
     // 检查是否被内核要求停机（TEST_FINISH 设备写入）
     if (cpu.bus.is_halted()) {

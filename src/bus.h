@@ -27,6 +27,9 @@ public:
 
   bool is_halted() const { return halted; }
 
+  /* 启动 UART 标准输入监听（用于 OS 运行时读取终端输入） */
+  void start_stdin();
+
   Dram dram;
   std::unique_ptr<Uart> uart;
   Clint clint;

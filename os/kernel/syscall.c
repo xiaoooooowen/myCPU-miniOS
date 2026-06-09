@@ -31,9 +31,35 @@ static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
 }
 
 /*
- * sys_exit() — 退出/停机
+ * sys_read() — 从控制台读取字符
  *
- * 进入死循环，停止系统推进。
+ * 参数：
+ *   fd   (未使用，只支持控制台)
+ *   buf  字符缓冲区
+ *   len  最大读取字节数
+ *
+ * 返回值：实际读取的字节数，失败返回 -1
+ *
+ * 注意：当前实现为单字符阻塞读取，每次调用读取 1 个字符。
+ */
+static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
+    (void)fd;
+
+    if (buf == 0 || len == 0)
+        return 0;
+
+    char *dst = (char *)buf;
+    for (uint64_t i = 0; i < len; i++) {
+        dst[i] = uart_getc();  /* 阻塞等待输入 */
+        /* 换行符终止读取（终端按 Enter 后继续） */
+        if (dst[i] == '\n')
+            return i + 1;
+    }
+    return len;
+}
+
+/*
+ * sys_exit() — 退出/停机
  *
  * 参数：
  *   code  退出码（当前未使用）
@@ -63,6 +89,9 @@ void syscall_dispatch(uint64_t *tf) {
     switch (nr) {
         case SYS_WRITE:
             tf[10] = sys_write(arg0, arg1, arg2);  /* 返回值写入 a0 */
+            break;
+        case SYS_READ:
+            tf[10] = sys_read(arg0, arg1, arg2);    /* 返回值写入 a0 */
             break;
         case SYS_EXIT:
             sys_exit(arg0);
