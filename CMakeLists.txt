@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.27)
 project(cemu LANGUAGES CXX)
 
+option(CEMU_TRACE "Enable per-instruction simulator trace logging" OFF)
+
 # 设置C++标准为C++23
 set(CMAKE_CXX_STANDARD 23)
 
@@ -31,6 +33,9 @@ set(COMMON_SOURCES
 )
 
 add_library(common_library ${COMMON_SOURCES})
+if(CEMU_TRACE)
+    target_compile_definitions(common_library PUBLIC CEMU_TRACE=1)
+endif()
 
 # 可执行文件
 add_executable(cemu

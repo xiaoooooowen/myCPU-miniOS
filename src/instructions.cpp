@@ -50,7 +50,7 @@ std::optional<uint64_t> executeLb(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LB: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LB: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 8);
   if (val.has_value()) {
     cpu.regs[rd] = static_cast<uint64_t>(static_cast<int8_t>(val.value() & 0xff));  // Sign extend
@@ -66,7 +66,7 @@ std::optional<uint64_t> executeLh(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LH: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LH: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 16);
   if (val.has_value()) {
     cpu.regs[rd] = static_cast<uint64_t>(static_cast<int16_t>(val.value() & 0xffff));  // Sign extend
@@ -82,7 +82,7 @@ std::optional<uint64_t> executeLw(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LW: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LW: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 32);
   if (val.has_value()) {
     cpu.regs[rd] = static_cast<uint64_t>(static_cast<int32_t>(val.value() & 0xffffffff));  // Sign extend
@@ -98,7 +98,7 @@ std::optional<uint64_t> executeLd(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LD: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LD: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 64);
   if (val.has_value()) {
     cpu.regs[rd] = val.value();
@@ -114,7 +114,7 @@ std::optional<uint64_t> executeLbu(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LBU: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LBU: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 8);
   if (val.has_value()) {
     cpu.regs[rd] = val.value() & 0xff;  // Zero extend
@@ -131,7 +131,7 @@ std::optional<uint64_t> executeLhu(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LHU: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LHU: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 16);
   if (val.has_value()) {
     cpu.regs[rd] = val.value() & 0xffff;  // Zero extend
@@ -148,7 +148,7 @@ std::optional<uint64_t> executeLwu(Cpu& cpu, uint32_t inst) {
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
   uint64_t addr = cpu.regs[rs1] + immediate;
 
-  LOG(INFO, "LWU: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
+  TRACE_LOG("LWU: x", rd, " = MEM[x", rs1, " + ", immediate, "]");
   auto val = cpu.load(addr, 32);
   if (val.has_value()) {
     cpu.regs[rd] = val.value() & 0xffffffff;  // Zero extend
@@ -168,11 +168,11 @@ std::optional<uint64_t> executeSb(Cpu& cpu, uint32_t inst) {
   int64_t imm = ((static_cast<int32_t>(inst & 0xfe000000) >> 20) & 0xffffffffffffffe0) |
                 ((inst >> 7) & 0x1f);
   uint64_t addr = cpu.regs[rs1] + imm;
-  LOG(INFO, "SB: x", rd, " = x", rs1, " + ", imm, " addr: ", addr);
+  TRACE_LOG("SB: x", rd, " = x", rs1, " + ", imm, " addr: ", addr);
   bool isSuc =  cpu.store(addr, 8, cpu.regs[rs2]);
 
   if (isSuc) {
-    LOG(INFO, "SB SUCCESS!");
+    TRACE_LOG("SB SUCCESS!");
     return cpu.update_pc();
   }
 
@@ -185,11 +185,11 @@ std::optional<uint64_t> executeStoreByte(Cpu& cpu, uint32_t inst) {
   int64_t imm = ((static_cast<int32_t>(inst & 0xfe000000) >> 20) & 0xffffffffffffffe0) |
                 ((inst >> 7) & 0x1f);
   uint64_t addr = cpu.regs[rs1] + imm;
-  LOG(INFO, "SB: x", rd, " = x", rs1, " + ", imm, " addr: ", addr);
+  TRACE_LOG("SB: x", rd, " = x", rs1, " + ", imm, " addr: ", addr);
   bool isSuc =  cpu.store(addr, 8, cpu.regs[rs2]);
 
   if (isSuc) {
-    LOG(INFO, "SB SUCCESS!");
+    TRACE_LOG("SB SUCCESS!");
     return cpu.update_pc();
   }
 
@@ -265,7 +265,7 @@ std::optional<uint64_t> executeStore(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeAddi(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
-  LOG(INFO, "ADDI: x", rd, " = x", rs1, " + ", immediate);
+  TRACE_LOG("ADDI: x", rd, " = x", rs1, " + ", immediate);
   cpu.regs[rd] = cpu.regs[rs1] + immediate;
   return cpu.update_pc();
 }
@@ -274,7 +274,7 @@ std::optional<uint64_t> executeSlli(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
 
-  LOG(INFO, "SLLI: x", rd, " = x", rs1, " << ", (immediate & 0x3f));
+  TRACE_LOG("SLLI: x", rd, " = x", rs1, " << ", (immediate & 0x3f));
   cpu.regs[rd] = cpu.regs[rs1] << (immediate & 0x3f);
   return cpu.update_pc();
 }
@@ -283,7 +283,7 @@ std::optional<uint64_t> executeSlti(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
 
-  LOG(INFO, "SLTI: x", rd, " = (x", rs1, " < ", immediate, ") ? 1 : 0");
+  TRACE_LOG("SLTI: x", rd, " = (x", rs1, " < ", immediate, ") ? 1 : 0");
   cpu.regs[rd] = (cpu.regs[rs1] < static_cast<uint64_t>(immediate)) ? 1 : 0;
   return cpu.update_pc();
 }
@@ -292,7 +292,7 @@ std::optional<uint64_t> executeSltiu(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
 
-  LOG(INFO, "SLTIU: x", rd, " = (x", rs1, " < ", immediate, ") ? 1 : 0");
+  TRACE_LOG("SLTIU: x", rd, " = (x", rs1, " < ", immediate, ") ? 1 : 0");
   cpu.regs[rd] = (cpu.regs[rs1] < static_cast<unsigned int>(immediate)) ? 1 : 0;
   return cpu.update_pc();
 }
@@ -301,7 +301,7 @@ std::optional<uint64_t> executeXori(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
 
-  LOG(INFO, "XORI: x", rd, " = x", rs1, " ^ ", immediate);
+  TRACE_LOG("XORI: x", rd, " = x", rs1, " ^ ", immediate);
   cpu.regs[rd] = cpu.regs[rs1] ^ immediate;
   return cpu.update_pc();
 }
@@ -313,7 +313,7 @@ std::optional<uint64_t> executeSrli(Cpu& cpu, uint32_t inst) {
   // "对于 RV64I，移位量被编码在 I-immediate 字段的低 6 位中。"
   uint32_t shamt = static_cast<uint32_t>(immediate & 0x3f);
 
-  LOG(INFO, "SRLI: x", rd, " = x", rs1, " >> ", shamt);
+  TRACE_LOG("SRLI: x", rd, " = x", rs1, " >> ", shamt);
   cpu.regs[rd] = cpu.regs[rs1] >> shamt;
   return cpu.update_pc();
 }
@@ -326,7 +326,7 @@ std::optional<uint64_t> executeSrai(Cpu& cpu, uint32_t inst) {
   // 而对于右移类指令，如算术右移指令（srai），这个立即数的低6位通常用来表示右移的位数。
   uint32_t shamt = static_cast<uint32_t>(immediate & 0x3f);
 
-  LOG(INFO, "SRAI: x", rd, " = x", rs1, " >> ", shamt, " (arithmetic right shift)");
+  TRACE_LOG("SRAI: x", rd, " = x", rs1, " >> ", shamt, " (arithmetic right shift)");
   cpu.regs[rd] = static_cast<uint64_t>(static_cast<int64_t>(cpu.regs[rs1]) >> shamt);
   return cpu.update_pc();
 }
@@ -334,7 +334,7 @@ std::optional<uint64_t> executeSrai(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSll(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "SLL: x", rd, " = x", rs1, " << x", rs2);
+  TRACE_LOG("SLL: x", rd, " = x", rs1, " << x", rs2);
   cpu.regs[rd] = cpu.regs[rs1] << cpu.regs[rs2];
   return cpu.update_pc();
 }
@@ -342,8 +342,8 @@ std::optional<uint64_t> executeSll(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSlt(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "SLT: x", rd, " = (x", rs1, " < x", rs2, ") ? 1 : 0");
-  LOG(INFO, "Values: x", rs1, " = ", cpu.regs[rs1], ", x", rs2, " = ", cpu.regs[rs2]);
+  TRACE_LOG("SLT: x", rd, " = (x", rs1, " < x", rs2, ") ? 1 : 0");
+  TRACE_LOG("Values: x", rs1, " = ", cpu.regs[rs1], ", x", rs2, " = ", cpu.regs[rs2]);
   cpu.regs[rd] = (static_cast<int64_t>(cpu.regs[rs1]) < static_cast<int64_t>(cpu.regs[rs2])) ? 1 : 0;
   return cpu.update_pc();
 }
@@ -351,7 +351,7 @@ std::optional<uint64_t> executeSlt(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeXor(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "XOR: x", rd, " = x", rs1, " ^ x", rs2);
+  TRACE_LOG("XOR: x", rd, " = x", rs1, " ^ x", rs2);
   cpu.regs[rd] = cpu.regs[rs1] ^ cpu.regs[rs2];
   return cpu.update_pc();
 }
@@ -359,7 +359,7 @@ std::optional<uint64_t> executeXor(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSrl(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "SRL: x", rd, " = x", rs1, " >> x", rs2);
+  TRACE_LOG("SRL: x", rd, " = x", rs1, " >> x", rs2);
   cpu.regs[rd] = cpu.regs[rs1] >> cpu.regs[rs2];
   return cpu.update_pc();
 }
@@ -367,7 +367,7 @@ std::optional<uint64_t> executeSrl(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSra(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "SRA: x", rd, " = x", rs1, " >> x", rs2, " (arithmetic right shift)");
+  TRACE_LOG("SRA: x", rd, " = x", rs1, " >> x", rs2, " (arithmetic right shift)");
   cpu.regs[rd] = static_cast<uint64_t>(static_cast<int64_t>(cpu.regs[rs1]) >> cpu.regs[rs2]);
   return cpu.update_pc();
 }
@@ -375,7 +375,7 @@ std::optional<uint64_t> executeSra(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeOr(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "OR: x", rd, " = x", rs1, " | x", rs2);
+  TRACE_LOG("OR: x", rd, " = x", rs1, " | x", rs2);
   cpu.regs[rd] = cpu.regs[rs1] | cpu.regs[rs2];
   return cpu.update_pc();
 }
@@ -383,7 +383,7 @@ std::optional<uint64_t> executeOr(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeAnd(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "AND: x", rd, " = x", rs1, " & x", rs2);
+  TRACE_LOG("AND: x", rd, " = x", rs1, " & x", rs2);
   cpu.regs[rd] = cpu.regs[rs1] & cpu.regs[rs2];
   return cpu.update_pc();
 }
@@ -391,7 +391,7 @@ std::optional<uint64_t> executeAnd(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeAddw(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
 
-  LOG(INFO, "ADDW: x", rd, " = x", rs1, " + x", rs2);
+  TRACE_LOG("ADDW: x", rd, " = x", rs1, " + x", rs2);
   int64_t result = static_cast<int32_t>(cpu.regs[rs1]) + static_cast<int32_t>(cpu.regs[rs2]);
   cpu.regs[rd] = static_cast<uint64_t>(result);
   return cpu.update_pc();
@@ -400,7 +400,7 @@ std::optional<uint64_t> executeAddw(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeOri(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
-  LOG(INFO, "ORI: x", rd , " = x" , rs1 , " | ", immediate);
+  TRACE_LOG("ORI: x", rd , " = x" , rs1 , " | ", immediate);
   cpu.regs[rd] = cpu.regs[rs1] | immediate;
   return cpu.update_pc();
 }
@@ -408,14 +408,14 @@ std::optional<uint64_t> executeOri(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeAndi(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
-  LOG(INFO, "ANDI: x", rd , " = x" , rs1 , " & ", immediate);
+  TRACE_LOG("ANDI: x", rd , " = x" , rs1 , " & ", immediate);
   cpu.regs[rd] = cpu.regs[rs1] & immediate;
   return cpu.update_pc();
 }
 
 std::optional<uint64_t> executeAdd(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
-  LOG(INFO, "ADD: x" , rd , " = x" , rs1 , " + x" , rs2);
+  TRACE_LOG("ADD: x" , rd , " = x" , rs1 , " + x" , rs2);
   cpu.regs[rd] = cpu.regs[rs1] + cpu.regs[rs2];
   return cpu.update_pc();
 }
@@ -423,7 +423,7 @@ std::optional<uint64_t> executeAdd(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeLui(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto immediate = static_cast<uint64_t>(inst & 0xfffff000);  // Extract the upper 20 bits
-  LOG(INFO, "LUI: x", rd , " = ", immediate);
+  TRACE_LOG("LUI: x", rd , " = ", immediate);
   cpu.regs[rd] = immediate;
   return cpu.update_pc();
 }
@@ -432,7 +432,7 @@ std::optional<uint64_t> executeAUIPC(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
   auto imm = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfffff000));
 
-  LOG(INFO, "AUIPC: x", rd, " = pc + ", imm);
+  TRACE_LOG("AUIPC: x", rd, " = pc + ", imm);
   cpu.regs[rd] = cpu.pc + imm;
   return cpu.update_pc();
 }
@@ -445,7 +445,7 @@ std::optional<uint64_t> executeJAL(Cpu& cpu, uint32_t inst) {
       ((inst >> 9) & 0x800) |
       ((inst >> 20) & 0x7fe)));
 
-  LOG(INFO, "JAL: x", rd, " = pc + 4; pc = pc + ", imm);
+  TRACE_LOG("JAL: x", rd, " = pc + 4; pc = pc + ", imm);
   cpu.regs[rd] = cpu.pc + 4;
   return cpu.pc + imm;
 }
@@ -457,7 +457,7 @@ std::optional<uint64_t> executeJALR(Cpu& cpu, uint32_t inst) {
   uint64_t t = cpu.pc + 4;
   uint64_t new_pc = (cpu.regs[rs1] + imm) & ~1;
 
-  LOG(INFO, "JALR: x", rd, " = pc + 4; pc = (x", rs1, " + ", imm, ") & ~1");
+  TRACE_LOG("JALR: x", rd, " = pc + 4; pc = (x", rs1, " + ", imm, ") & ~1");
   cpu.regs[rd] = t;
   return new_pc;
 }
@@ -471,7 +471,7 @@ std::optional<uint64_t> executeBEQ(Cpu& cpu, uint32_t inst) {
   int64_t imm = static_cast<int64_t>(inner);
 
   if (cpu.regs[rs1] == cpu.regs[rs2]) {
-    LOG(INFO, "BEQ: pc = pc + ", imm);
+    TRACE_LOG("BEQ: pc = pc + ", imm);
     return cpu.pc + imm;
   }
   return cpu.update_pc();
@@ -666,7 +666,7 @@ std::optional<uint64_t> executeBNE(Cpu& cpu, uint32_t inst) {
     int64_t imm = static_cast<int64_t>(inner);
 
     if (cpu.regs[rs1] != cpu.regs[rs2]) {
-        LOG(INFO, "BNE: pc = pc + ", imm);
+        TRACE_LOG("BNE: pc = pc + ", imm);
         return cpu.pc + imm;
     }
 
@@ -694,7 +694,7 @@ std::optional<uint64_t> executeBLT(Cpu& cpu, uint32_t inst) {
   int64_t imm = static_cast<int64_t>(inner);
 
   if (static_cast<int64_t>(cpu.regs[rs1]) < static_cast<int64_t>(cpu.regs[rs2])) {
-    LOG(INFO, "BLT: pc = pc + ", imm);
+    TRACE_LOG("BLT: pc = pc + ", imm);
     return cpu.pc + imm;
   }
 
@@ -711,7 +711,7 @@ std::optional<uint64_t> executeBGE(Cpu& cpu, uint32_t inst) {
     int64_t imm = static_cast<int64_t>(inner);
 
     if (static_cast<int64_t>(cpu.regs[rs1]) >= static_cast<int64_t>(cpu.regs[rs2])) {
-        LOG(INFO, "BGE: pc = pc + ", imm);
+        TRACE_LOG("BGE: pc = pc + ", imm);
         return cpu.pc + imm;
     }
 
@@ -727,7 +727,7 @@ std::optional<uint64_t> executeBGEU(Cpu& cpu, uint32_t inst) {
     int64_t imm = static_cast<int64_t>(inner);
 
     if (cpu.regs[rs1] >= cpu.regs[rs2]) {
-        LOG(INFO, "BGEU: pc = pc + ", imm);
+        TRACE_LOG("BGEU: pc = pc + ", imm);
         return cpu.pc + imm;
     }
 
@@ -743,7 +743,7 @@ std::optional<uint64_t> executeBLTU(Cpu& cpu, uint32_t inst) {
     int64_t imm = static_cast<int64_t>(inner);
 
     if (cpu.regs[rs1] < cpu.regs[rs2]) {
-        LOG(INFO, "BLTU: pc = pc + ", imm);
+        TRACE_LOG("BLTU: pc = pc + ", imm);
         return cpu.pc + imm;
     }
 
@@ -752,20 +752,20 @@ std::optional<uint64_t> executeBLTU(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeSUB(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    LOG(INFO, "SUB: x", rd, " = x", rs1, " - x", rs2);
+    TRACE_LOG("SUB: x", rd, " = x", rs1, " - x", rs2);
     cpu.regs[rd] = cpu.regs[rs1] - cpu.regs[rs2];
     return cpu.update_pc();
 }
 
 std::optional<uint64_t> executeSLTU(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    LOG(INFO, "SLTU: x", rd, " = (x", rs1, " < x", rs2, ") ? 1 : 0");
+    TRACE_LOG("SLTU: x", rd, " = (x", rs1, " < x", rs2, ") ? 1 : 0");
     cpu.regs[rd] = (cpu.regs[rs1] < cpu.regs[rs2]) ? 1 : 0;
     return cpu.update_pc();
 }
 
 std::optional<uint64_t> executeECALL(Cpu& cpu, uint32_t inst) {
-    LOG(INFO, "ECALL");
+    TRACE_LOG("ECALL");
     switch (cpu.mode) {
         case Machine:
             throw Exception(ExceptionType::EnvironmentCallFromMMode, inst);
@@ -779,19 +779,19 @@ std::optional<uint64_t> executeECALL(Cpu& cpu, uint32_t inst) {
 }
 
 std::optional<uint64_t> executeEBREAK(Cpu& cpu, uint32_t inst) {
-    LOG(INFO, "EBREAK");
+    TRACE_LOG("EBREAK");
     throw Exception(ExceptionType::Breakpoint, inst);
 }
 
 std::optional<uint64_t> executeWFI(Cpu& cpu, uint32_t inst) {
-    LOG(INFO, "WFI");
+    TRACE_LOG("WFI");
     return cpu.update_pc();
 }
 
 std::optional<uint64_t> executeADDIW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
     auto immediate = static_cast<int64_t>(static_cast<int32_t>(inst & 0xfff00000) >> 20);
-    LOG(INFO, "ADDIW: x", rd, " = x", rs1, " + ", immediate);
+    TRACE_LOG("ADDIW: x", rd, " = x", rs1, " + ", immediate);
     int64_t result = static_cast<int32_t>(cpu.regs[rs1] + immediate);
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -800,7 +800,7 @@ std::optional<uint64_t> executeADDIW(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSLLIW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
     uint32_t shamt = (inst >> 20) & 0x1f;
-    LOG(INFO, "SLLIW: x", rd, " = x", rs1, " << ", shamt);
+    TRACE_LOG("SLLIW: x", rd, " = x", rs1, " << ", shamt);
     int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) << shamt);
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -809,7 +809,7 @@ std::optional<uint64_t> executeSLLIW(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSRLIW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
     uint32_t shamt = (inst >> 20) & 0x1f;
-    LOG(INFO, "SRLIW: x", rd, " = x", rs1, " >> ", shamt);
+    TRACE_LOG("SRLIW: x", rd, " = x", rs1, " >> ", shamt);
     int64_t result = static_cast<int32_t>(static_cast<uint32_t>(cpu.regs[rs1]) >> shamt);
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -818,7 +818,7 @@ std::optional<uint64_t> executeSRLIW(Cpu& cpu, uint32_t inst) {
 std::optional<uint64_t> executeSRAIW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
     uint32_t shamt = (inst >> 20) & 0x1f;
-    LOG(INFO, "SRAIW: x", rd, " = x", rs1, " >> ", shamt, " (arithmetic)");
+    TRACE_LOG("SRAIW: x", rd, " = x", rs1, " >> ", shamt, " (arithmetic)");
     int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) >> shamt);
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -826,7 +826,7 @@ std::optional<uint64_t> executeSRAIW(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeSUBW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    LOG(INFO, "SUBW: x", rd, " = x", rs1, " - x", rs2);
+    TRACE_LOG("SUBW: x", rd, " = x", rs1, " - x", rs2);
     int64_t result = static_cast<int32_t>(cpu.regs[rs1]) - static_cast<int32_t>(cpu.regs[rs2]);
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -834,7 +834,7 @@ std::optional<uint64_t> executeSUBW(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeSLLW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    LOG(INFO, "SLLW: x", rd, " = x", rs1, " << x", rs2);
+    TRACE_LOG("SLLW: x", rd, " = x", rs1, " << x", rs2);
     int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) << (cpu.regs[rs2] & 0x1f));
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -842,7 +842,7 @@ std::optional<uint64_t> executeSLLW(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeSRLW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    LOG(INFO, "SRLW: x", rd, " = x", rs1, " >> x", rs2);
+    TRACE_LOG("SRLW: x", rd, " = x", rs1, " >> x", rs2);
     int64_t result = static_cast<int32_t>(static_cast<uint32_t>(cpu.regs[rs1]) >> (cpu.regs[rs2] & 0x1f));
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -850,7 +850,7 @@ std::optional<uint64_t> executeSRLW(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeSRAW(Cpu& cpu, uint32_t inst) {
     auto [rd, rs1, rs2] = unpackInstruction(inst);
-    LOG(INFO, "SRAW: x", rd, " = x", rs1, " >> x", rs2, " (arithmetic)");
+    TRACE_LOG("SRAW: x", rd, " = x", rs1, " >> x", rs2, " (arithmetic)");
     int64_t result = static_cast<int32_t>(static_cast<int32_t>(cpu.regs[rs1]) >> (cpu.regs[rs2] & 0x1f));
     cpu.regs[rd] = static_cast<uint64_t>(result);
     return cpu.update_pc();
@@ -865,8 +865,8 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
 
   // x0 is hardwired zero
   cpu.regs[0] = 0;
-  LOG(INFO, "Instruction: 0x", std::hex, inst, std::dec);
-  LOG(INFO, "Executing instruction with opcode: 0x", std::hex, opcode, std::dec);
+  TRACE_LOG("Instruction: 0x", std::hex, inst, std::dec);
+  TRACE_LOG("Executing instruction with opcode: 0x", std::hex, opcode, std::dec);
 
   std::unordered_map<uint32_t, ExecuteFunction> opcodeTable = {
     {0x17, executeAUIPC},
@@ -882,14 +882,14 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
   if (executeFunc != opcodeTable.end()) {
     auto result = executeFunc->second(cpu, inst);
     if (result.has_value()) {
-      LOG(INFO, "Instruction executed successfully. New PC: 0x", std::hex, result.value(), std::dec);
+      TRACE_LOG("Instruction executed successfully. New PC: 0x", std::hex, result.value(), std::dec);
     } else {
       throw Exception(ExceptionType::IllegalInstruction, inst);
     }
     return result;
   }
 
-  LOG(INFO, "funct3: 0x", std::hex, funct3, std::dec);
+  TRACE_LOG("funct3: 0x", std::hex, funct3, std::dec);
 
   std::unordered_map<std::tuple<uint32_t, uint32_t>, ExecuteFunction> instructionMap = {
     {std::make_tuple(0x03, 0x0), executeLb},
@@ -932,14 +932,14 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
   if (it != instructionMap.end()) {
     auto result = it->second(cpu, inst);
     if (result.has_value()) {
-      LOG(INFO, "Instruction executed successfully. New PC: 0x", std::hex, result.value(), std::dec);
+      TRACE_LOG("Instruction executed successfully. New PC: 0x", std::hex, result.value(), std::dec);
     } else {
       throw Exception(ExceptionType::IllegalInstruction, inst);
     }
     return result;
   }
 
-  LOG(INFO, "funct7: 0x", std::hex, funct7, std::dec);
+  TRACE_LOG("funct7: 0x", std::hex, funct7, std::dec);
 
   std::unordered_map<std::tuple<uint32_t, uint32_t, uint32_t>, ExecuteFunction> instruction2Map = {
     {std::make_tuple(0x13, 0x5, 0x00), executeSrli},
@@ -974,11 +974,11 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
     uint32_t funct6 = (inst >> 26) & 0x3f;
     it1 = instruction2Map.find({opcode, funct3, funct6});
   }
-  LOG(INFO, "Executing srli or srai funct7: 0x" , std::hex, funct7 , std::dec);
+  TRACE_LOG("Executing srli or srai funct7: 0x" , std::hex, funct7 , std::dec);
   if (it1 != instruction2Map.end()) {
     auto result = it1->second(cpu, inst);
     if (result.has_value()) {
-      LOG(INFO, "Instruction executed successfully. New PC: 0x", std::hex, result.value(), std::dec);
+      TRACE_LOG("Instruction executed successfully. New PC: 0x", std::hex, result.value(), std::dec);
     } else {
       throw Exception(ExceptionType::IllegalInstruction, inst);
     }

@@ -14,7 +14,12 @@ constexpr std::string_view NC = "\033[0m";  // No color
 
 // Log 级别
 enum LogLevel { DEBUG, INFO, WARNING, ERROR };
+
+#ifdef CEMU_TRACE
+constexpr LogLevel MIN_LOG_LEVEL = DEBUG;
+#else
 constexpr LogLevel MIN_LOG_LEVEL = WARNING;
+#endif
 
 // 接受任何可以通过 << 输出的类型
 template <typename T>
@@ -52,5 +57,11 @@ void print_log(std::ostream& os, LogLevel level, Args&&... s) {
   do {                                                              \
     print_log(std::cout, level, "In function ", __FUNCTION__, " (", __FILE__, ':', __LINE__, "): ", __VA_ARGS__);                   \
   } while (0)
+
+#ifdef CEMU_TRACE
+#define TRACE_LOG(...) LOG(cemu::INFO, __VA_ARGS__)
+#else
+#define TRACE_LOG(...) do { } while (0)
+#endif
 
 }

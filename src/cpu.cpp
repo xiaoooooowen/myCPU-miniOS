@@ -25,7 +25,7 @@ std::optional<uint32_t> Cpu::fetch() {
   uint64_t paddr = mmu.translate(pc, Mmu::AccessType::Instruction, this->mode);
   auto inst = bus.load(paddr, 32);
   if (inst.has_value()) {
-    LOG(INFO, "Instruction fetched: ", std::hex, inst.value(), std::dec);
+    TRACE_LOG("Instruction fetched: ", std::hex, inst.value(), std::dec);
     return inst.value();
   }
   throw Exception(ExceptionType::InstructionAccessFault, paddr);
@@ -34,7 +34,7 @@ std::optional<uint32_t> Cpu::fetch() {
 std::optional<uint64_t>  Cpu::execute(uint32_t inst) {
   auto exe = InstructionExecutor::execute(*this, inst);
   if (exe.has_value()) {
-    LOG(INFO, "Execution successful. Result: ", std::hex, exe.value());
+    TRACE_LOG("Execution successful. Result: ", std::hex, exe.value());
     return exe;
   }
   throw Exception(ExceptionType::IllegalInstruction, pc);

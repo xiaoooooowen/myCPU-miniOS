@@ -2,6 +2,8 @@
 #include <vector>
 #include <cstdint>
 #include <fstream>
+#include <chrono>
+#include <iomanip>
 #include "cpu.h"
 #include "log.h"
 #include "exception.h"
@@ -24,6 +26,9 @@ int main(int argc, char* argv[]) {
 
   // 启动 UART 标准输入监听，用于 OS 运行时读取终端输入
   cpu.bus.start_stdin();
+
+  uint64_t instret = 0;
+  const auto start_time = std::chrono::steady_clock::now();
 
   while (true) {
     // 检查是否被内核要求停机（TEST_FINISH 设备写入）
@@ -56,6 +61,7 @@ int main(int argc, char* argv[]) {
       }
       auto new_pc = cpu.execute(inst.value());
       cpu.pc = new_pc.value();
+      instret++;
     } catch (const cemu::Exception& e) {
       uint64_t fault_pc = cpu.pc;
       cpu.handle_exception(e);
@@ -66,6 +72,20 @@ int main(int argc, char* argv[]) {
       }
     }
   }
+
+  const auto end_time = std::chrono::steady_clock::now();
+  const std::chrono::duration<double> elapsed = end_time - start_time;
+  const double seconds = elapsed.count();
+  const double ips = seconds > 0.0
+      ? static_cast<double>(instret) / seconds
+      : 0.0;
+
+  std::cout << "\n=== CEMU Performance ===\n"
+            << "Instructions retired: " << instret << '\n'
+            << std::fixed << std::setprecision(6)
+            << "Elapsed time:         " << seconds << " s\n"
+            << std::setprecision(2)
+            << "Throughput:           " << ips << " IPS\n";
 
   cpu.dump_registers(); // 打印寄存器状态
   cpu.dump_pc();        // 打印PC寄存器状态
