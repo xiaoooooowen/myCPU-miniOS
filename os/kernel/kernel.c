@@ -338,28 +338,13 @@ void kernel_main(void) {
            fcfs_trace == 1122 ? "PASS" : "FAIL", fcfs_trace);
 
     /* 重新建立RR演示基线。 */
-    printk("\n--- Phase 12B: Process, RR & Synchronization Test ---\n");
+    printk("\n--- Phase 12B: Interactive User Shell ---\n");
     local_irq_disable();
     task_set_scheduler(SCHED_RR);
     task_init();
     task_set_quantum(1);
     timer_set_timeslice_ms(10);
-    sem_init(&sync_gate, 0);
-    mutex_init(&sync_mutex);
-    sync_counter = 0;
-    printk("Creating tasks...\n");
-
-    /*
-     * 创建 3 个任务：
-     *   task_a        — 持续运行的循环任务（不会退出）
-     *   user_task     — 进入 U 模式后通过 sys_exit 退出
-     *   short_lived   — 循环 3 次后通过 ecall sys_exit 退出
-     */
-    task_create(task_a, "task_a");
-    task_create(user_task_entry, "user_task");
-    task_create(short_lived_task, "short_lived");
-    task_create(sync_task_b, "sync_waiter");
-    task_create(sync_task_a, "sync_notifier");
+    int shell_pid = task_create(user_task_entry, "shell");
     task_dump_tree();
 
     /* 使能 S 模式全局中断 + 启动定时器中断 — 周期性触发抢占式调度 */
@@ -369,39 +354,11 @@ void kernel_main(void) {
     /* 进入抢占式调度，静默定时器中断的 trap 输出噪音 */
     trap_set_silent(1);
 
-    printk("Entering idle loop (will reap zombies)...\n");
-
-    int idle_count = 0;
-    int reap_count = 0;
+    printk("Starting shell (pid=%d)...\n", shell_pid);
     while (1) {
-        printk("[Idle] count=%d\n", idle_count++);
-        for (volatile int i = 0; i < 1000; i++)
-            ;
-
-        /* 回收已退出的 ZOMBIE 子任务 */
-        int tid = task_wait();
-        if (tid >= 0) {
-            printk("[Idle] Reaped zombie task %d\n", tid);
-            reap_count++;
-        }
-
-        /*
-         * user parent、short_lived、sync_a、sync_b 共4个直接子进程。
-         * fork child 由用户父进程通过 waitpid 回收。
-         */
-        if (reap_count >= 4) {
-            printk("[%s] semaphore + mutex + BLOCKED wakeup (counter=%d)\n",
-                   sync_counter == 2 ? "PASS" : "FAIL", sync_counter);
-            task_dump_processes();
-            printk("\n--- All zombies reaped, halting ---\n");
-            *(volatile uint32_t *)0x100000 = 0x5555;
-            while (1)
-                ;
-        }
-
-        /* 安全网：idle 运行 50 次后强制停机 */
-        if (idle_count >= 50) {
-            printk("\n--- Idle timeout, halting ---\n");
+        int pid = task_waitpid(shell_pid, NULL, 1);
+        if (pid == shell_pid) {
+            printk("\nShell exited, halting MiniOS.\n");
             *(volatile uint32_t *)0x100000 = 0x5555;
             while (1)
                 ;

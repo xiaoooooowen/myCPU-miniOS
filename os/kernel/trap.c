@@ -12,6 +12,7 @@ void trap_handler(uint64_t *tf) {
     uint64_t cause = trap_cause_read();
     uint64_t epc   = trap_epc_read();
     uint64_t tval  = trap_tval_read();
+    int quiet_syscall = trap_silent && (cause == 8 || cause == 9);
     (void)tf;  /* 作为 trap frame 基址传递给 sched_tick */
 
     /* 判断是异常还是中断 */
@@ -61,18 +62,21 @@ void trap_handler(uint64_t *tf) {
     }
 
     /* 异常 */
-    printk("=== TRAP ===\n");
-    printk("scause: %lx\n", cause);
-    printk("sepc:   %lx\n", epc);
-    printk("stval:  %lx\n", tval);
-    printk("Type: Exception (%lx)\n", cause);
+    if (!quiet_syscall) {
+        printk("=== TRAP ===\n");
+        printk("scause: %lx\n", cause);
+        printk("sepc:   %lx\n", epc);
+        printk("stval:  %lx\n", tval);
+        printk("Type: Exception (%lx)\n", cause);
+    }
 
     int rescheduled = 0;  /* 是否已通过 sched_tick 切换上下文 */
     int context_replaced = 0;
 
     switch (cause) {
         case 8:
-            printk("  -> Environment call from U-mode\n");
+            if (!quiet_syscall)
+                printk("  -> Environment call from U-mode\n");
             context_replaced = syscall_dispatch(tf);
             if (task_current_state() == TASK_ZOMBIE ||
                 task_current_state() == TASK_BLOCKED) {
@@ -83,7 +87,8 @@ void trap_handler(uint64_t *tf) {
             }
             break;
         case 9:
-            printk("  -> Environment call from S-mode\n");
+            if (!quiet_syscall)
+                printk("  -> Environment call from S-mode\n");
             context_replaced = syscall_dispatch(tf);
             if (task_current_state() == TASK_ZOMBIE ||
                 task_current_state() == TASK_BLOCKED) {
@@ -104,7 +109,8 @@ void trap_handler(uint64_t *tf) {
             break;
     }
 
-    printk("=== TRAP END ===\n");
+    if (!quiet_syscall)
+        printk("=== TRAP END ===\n");
 
     /* 异常：推进 sepc 跳过触发异常的指令
      * 注意：若已通过 sched_tick 重调度，sepc 已被设置为新任务的入口，

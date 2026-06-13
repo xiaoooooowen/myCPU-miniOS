@@ -21,7 +21,11 @@
 ### 构建命令
 
 ```bash
-# 模拟器 + 测试
+# 模拟器 + 测试（Release 模式，无 trace 日志）
+cmake --build build_wsl -j$(nproc)
+
+# 模拟器 + 测试（开启指令级 trace 日志）
+cmake .. -DCEMU_TRACE=ON
 cmake --build build_wsl -j$(nproc)
 
 # MiniOS 内核

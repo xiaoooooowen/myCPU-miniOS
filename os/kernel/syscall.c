@@ -161,6 +161,11 @@ static uint64_t sys_close(uint64_t fd) {
     return (uint64_t)ramfs_close((int)fd);
 }
 
+static uint64_t sys_ps(void) {
+    task_dump_processes();
+    return 0;
+}
+
 /*
  * syscall_dispatch() — 系统调用分派
  *
@@ -205,6 +210,9 @@ int syscall_dispatch(uint64_t *tf) {
             break;
         case SYS_CLOSE:
             tf[10] = sys_close(arg0);
+            break;
+        case SYS_PS:
+            tf[10] = sys_ps();
             break;
         default:
             printk("Unknown syscall number: %ld\n", (long)nr);
