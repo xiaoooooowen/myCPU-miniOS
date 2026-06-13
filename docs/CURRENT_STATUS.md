@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-06-09
-> 冻结版本：阶段 0.5 + 阶段 1 + 阶段 2 + 阶段 3 + 阶段 4 + 阶段 5 + 阶段 6 + 阶段 7 + 阶段 8 + 阶段 9 + 阶段 10 + 模块一至模块七 全部完成
+> 冻结时间：2026-06-13
+> 冻结版本：阶段 0.5 至阶段 10 + 模块一至模块八全部完成
 
 ## 一、环境信息
 
@@ -186,14 +186,16 @@ Type: Exception (0x8)
 | 用户态系统调用 | user_entry.S + trap.c + syscall.c | ✅ 完成（模块三） | U 模式 ecall(scause=8) → S 模式 trap → sys_write(64) 输出 "Hello from user!" → sys_exit(93) 写入 TEST_FINISH 停机 |
 | 用户地址空间权限隔离 | mmu.cpp + vm.c + vm.h + bus.h/cpp | ✅ 完成（模块四） | MMU translate 增加 mode 参数，U 位检查阻止用户态访问内核页（U=0），新增 3 个 MMU 测试，91/91 全通过 |
 | UART 输入与 sys_read | uart.c/h + syscall.c/h + bus.h/cpp + main.cpp | ✅ 完成（模块五） | 内核端 uart_getc()/uart_has_data()，SYS_READ(63) 支持单字符阻塞读取（遇换行符终止），stdin 监听改用 poll() 非阻塞 |
+| 任务状态与 exit/wait 雏形 | task.h/c + syscall.h/c + trap.c + kernel.c | ✅ 完成（模块六） | TASK_BLOCKED/TASK_ZOMBIE 状态，parent 父子关系，task_exit() 标 ZOMBIE，task_wait() 回收子任务，sys_exit 变 ZOMBIE+重调度，退出任务不再占用 CPU，91/91 测试全通过 |
+| RAMFS 最小内存文件系统 | ramfs.h/c + syscall.h/c + kernel.c + Makefile | ✅ 完成（模块七） | 8 文件槽位，每个 4096 字节，create/write/read/close，sys_write/sys_read fd 分派（0=stdin, 1=stdout, >=2=RAMFS），SYS_OPEN(56)/SYS_CLOSE(57)，内核自测通过 |
+| 完整进程管理 | task.h/c + sync.h/c + user.h/c + syscall.h/c + trap.S/c | ✅ 完成（模块八） | 完整 PCB、FCFS/RR、10ms 可配置时间片、READY/RUNNING/BLOCKED/ZOMBIE、信号量、互斥锁、独立 Sv39 地址空间、fork/exec、exit/wait/waitpid、父子树与孤儿接管 |
 
-### 未完成的模块
+### 未完成的扩展
 
 | 模块 | 状态 |
 |------|------|
-| 任务状态与 exit/wait 雏形 | ❌ 未开始 |
-| RAMFS 最小内存文件系统 | ❌ 未开始 |
-| 完整进程管理（ELF loader、fork/exec/wait） | ❌ 未开始 |
+| 通用 ELF 文件解析器与外部程序加载 | ❌ 未开始（当前 exec 加载两个内置用户映像） |
+| 完整 Shell | ❌ 未开始 |
 
 ## 五、指令集覆盖
 
@@ -356,6 +358,8 @@ Type: Exception (0x8)
 | WFI 指令为 NOP 实现，无法真正暂停 CPU | 低 | 功能正确但效率低，不影响当前阶段 |
 | IDE/LSP 报告 RISC-V 内联汇编寄存器名未知（`a0`/`a1`/`a7`） | 低 | ✅ 已修复 — 宿主 x86 语言服务器不认识 RISC-V 寄存器名，用 `#ifdef __riscv` 包裹内联汇编，`#else` 分支提供无害替代。不影响交叉编译和运行 |
 | 抢占式调度 sched_tick 未触发任务切换 | 高 | ✅ 已修复（阶段 9 — SIP/MTIP 委托映射修复） |
+| U 模式 ecall 退出后 sret 保持 SPP=0 导致后续任务运行在 U 模式 | 高 | ✅ 已修复（模块六 — trap_handler 在 U 模式 ecall 重调度后恢复 SPP=1） |
+| exec 当前加载内置用户映像，尚未实现通用 ELF 文件解析 | 低 | 不影响进程管理验收，列为后续扩展 |
 
 ## 八、当前文件结构
 
@@ -410,7 +414,9 @@ mycpu/
 │   │   ├── user.c           (用户模式：分配物理页 + 构建用户页表 + 复制用户程序 + sret 切换)
 │   │   ├── user_entry.S     (用户程序：sys_write(1,msg,17) + sys_exit(0) 两条 ecall)
 │   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init + 全局页表指针导出)
-│   │   └── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP + 暴露全局页表指针)
+│   │   ├── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP + 暴露全局页表指针)
+│   │   ├── ramfs.h          (RAMFS 头文件：文件表结构定义 + create/write/read/close 接口)
+│   │   └── ramfs.c          (RAMFS：8 文件槽 × 4096 字节，固定大小内存文件表)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/
@@ -435,9 +441,10 @@ mycpu/
 
 | 优先级 | 任务 | 所属阶段 |
 |--------|------|----------|
-| P1 | MMU 检查 PTE_U 位实现用户态权限隔离 | 模块四 |
-| P2 | 代码整洁：B-type 6 条指令提取公共立即数解码函数 | 重构 |
-| P2 | UART 输入缓冲 + sys_read 系统调用 | 模块五 |
+| P1 | 代码整洁与稳定收尾 | 收尾 |
+| P1 | 结题报告、PPT与演示材料 | 收尾 |
+| P2 | 通用 ELF loader | 下一阶段 |
+| P2 | 完整 Shell | 下一阶段 |
 
 ## 十、本轮关键学习点
 
@@ -477,3 +484,7 @@ mycpu/
 34. **sret 的行为**：`sret` 执行 `PC = sepc, mode = sstatus.SPP`，同时自动设 `SPP=User`（最低特权级）。进入用户模式后，只有 ecall 能回到 S 模式处理系统调用。
 35. **ECALL 后 sepc 必须 +4**：用户态 ecall 触发 trap 后 sepc 指向 ecall 指令本身。trap handler 若不推进 sepc，sret 会回到同一条 ecall，形成无限循环。
 36. **位置无关代码的关键**：用户程序使用 `auipc + addi`（`la` 伪指令）的 PC 相对寻址访问内嵌字符串，确保代码被复制到任意物理地址后仍能正确运行。这是用户态程序标准做法。
+37. **ZOMBIE 状态是 UNIX 进程模型的精髓**：进程退出后不立即释放所有资源，而是保留 PCB（含退出码）等待父进程通过 wait() 回收。这解决了"子进程退出信息如何传递给父进程"的经典问题。在 MiniOS 中简化为：task_exit 标 ZOMBIE → 调度器跳过 → idle 调 task_wait 回收内核栈并释放。
+38. **ECALL 退出后的特权级陷阱**：U 模式 ecall 进入 S 模式 trap handler，sstatus.SPP 被硬件设为 User。如果 trap handler 触发重调度（sched_tick），sret 会切换到 U 模式运行下一个内核任务——这是 bug。修复方法：重调度后手动设置 `sstatus.SPP=1`（Supervisor），确保所有内核任务运行在 S 模式。
+39. **epc+4 与 sched_tick 的竞态**：trap_handler 原本无条件执行 `epc+4`。但 sched_tick 已将 sepc 设为新任务的入口地址，如果再 +4 会跳过第一条指令。修复：引入 `rescheduled` 标志，仅在未重调度时推进 epc。
+40. **fd 作为统一抽象的价值**：内核将 fd=0/1 固定映射为 stdin/stdout（UART），fd>=2 为 RAMFS 文件。这使得 sys_write/sys_read 可以用同一个系统调用号处理控制台和文件 I/O。UNIX "一切皆文件" 哲学的微型实现。sys_open/sys_close 是后续通用文件描述符表的基础。

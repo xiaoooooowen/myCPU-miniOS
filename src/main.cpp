@@ -57,9 +57,11 @@ int main(int argc, char* argv[]) {
       auto new_pc = cpu.execute(inst.value());
       cpu.pc = new_pc.value();
     } catch (const cemu::Exception& e) {
+      uint64_t fault_pc = cpu.pc;
       cpu.handle_exception(e);
       if (e.isFatal()) {
-        LOG(cemu::INFO, "Fatal error: ", e.what());
+        LOG(cemu::WARNING, "Fatal error at PC 0x", std::hex, fault_pc,
+            ": ", e.what(), std::dec);
         break;
       }
     }

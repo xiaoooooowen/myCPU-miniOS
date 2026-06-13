@@ -14,6 +14,7 @@ constexpr std::string_view NC = "\033[0m";  // No color
 
 // Log 级别
 enum LogLevel { DEBUG, INFO, WARNING, ERROR };
+constexpr LogLevel MIN_LOG_LEVEL = WARNING;
 
 // 接受任何可以通过 << 输出的类型
 template <typename T>
@@ -25,6 +26,9 @@ constexpr bool ENABLE_DEBUG_PANIC = true;
 // 打印日志函数，接受可打印类型的参数（Printable... Args）
 template <Printable... Args>
 void print_log(std::ostream& os, LogLevel level, Args&&... s) {
+  if (level < MIN_LOG_LEVEL) {
+    return;
+  }
   // 定义日志级别字符串数组
   const char* levelStrings[] = {"DEBUG", "INFO", "WARNING", "ERROR"};
   // 定义颜色字符串视图数组，对应不同的日志级别

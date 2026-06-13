@@ -1,104 +1,309 @@
 #include "task.h"
 #include "mem.h"
 #include "printk.h"
+#include "user.h"
+#include "timer.h"
 #include "../include/csr.h"
 
-/* 任务表 */
 static struct task tasks[MAX_TASKS];
 static struct task *current = NULL;
 static int task_count = 0;
+static int next_pid = 1;
+static uint64_t order_counter = 0;
+static enum sched_policy scheduler_policy = SCHED_RR;
+static unsigned int scheduler_quantum = TASK_DEFAULT_QUANTUM;
+static uint64_t switch_samples = 0;
+static uint64_t max_switch_ticks = 0;
+extern char _stack_top;
 
-/*
- * 简单轮询调度器：找到下一个 READY 任务
- */
-static struct task *schedule(void) {
-    if (task_count == 0)
-        return NULL;
-
-    int idx = 0;
-    if (current != NULL) {
-        /* 从 current 的下一个开始找 */
-        idx = (current - tasks + 1) % MAX_TASKS;
-    }
-
-    for (int i = 0; i < MAX_TASKS; i++) {
-        int tid = (idx + i) % MAX_TASKS;
-        if (tasks[tid].state == TASK_READY ||
-            tasks[tid].state == TASK_RUNNING) {
-            return &tasks[tid];
+static void copy_name(char *dst, const char *src) {
+    int i = 0;
+    if (src != NULL) {
+        while (i < TASK_NAME_LEN - 1 && src[i] != '\0') {
+            dst[i] = src[i];
+            i++;
         }
     }
+    dst[i] = '\0';
+}
+
+static const char *state_name(int state) {
+    switch (state) {
+        case TASK_UNUSED:  return "UNUSED";
+        case TASK_READY:   return "READY";
+        case TASK_RUNNING: return "RUNNING";
+        case TASK_BLOCKED: return "BLOCKED";
+        case TASK_ZOMBIE:  return "ZOMBIE";
+        default:           return "UNKNOWN";
+    }
+}
+
+static struct task *find_pid(int pid) {
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].pid == pid)
+            return &tasks[i];
+    }
     return NULL;
+}
+
+static int has_ready_non_idle(void) {
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == TASK_READY)
+            return 1;
+    }
+    return 0;
+}
+
+static struct task *select_rr(void) {
+    int start = 0;
+    if (current != NULL)
+        start = (int)(current - tasks + 1) % MAX_TASKS;
+
+    for (int i = 0; i < MAX_TASKS; i++) {
+        struct task *candidate = &tasks[(start + i) % MAX_TASKS];
+        if (candidate->state == TASK_READY)
+            return candidate;
+    }
+    return NULL;
+}
+
+static struct task *select_fcfs(void) {
+    struct task *best = NULL;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_READY)
+            continue;
+        if (best == NULL || tasks[i].ready_order < best->ready_order)
+            best = &tasks[i];
+    }
+    return best;
+}
+
+static struct task *select_next(void) {
+    if (scheduler_policy == SCHED_FCFS)
+        return select_fcfs();
+    return select_rr();
+}
+
+static void save_trap_context(struct task *task, uint64_t *tf) {
+    for (int i = 0; i < TASK_REG_COUNT; i++)
+        task->trap_ctx.regs[i] = tf[i];
+    task->trap_ctx.epc = trap_epc_read();
+    task->trap_ctx.status = trap_status_read();
+    task->trap_ctx.satp = csr_read(satp);
+}
+
+static void restore_trap_context(const struct task *task, uint64_t *tf) {
+    for (int i = 0; i < TASK_REG_COUNT; i++)
+        tf[i] = task->trap_ctx.regs[i];
+    trap_epc_write(task->trap_ctx.epc);
+    trap_status_write(task->trap_ctx.status);
+    trap_scratch_write(task->stack == NULL
+        ? (uint64_t)&_stack_top
+        : (uint64_t)task->stack + PAGE_SIZE);
+    if (csr_read(satp) != task->trap_ctx.satp) {
+        csr_write(satp, task->trap_ctx.satp);
+        __asm__ volatile("sfence.vma x0, x0");
+    }
+}
+
+static int switch_from_trap(uint64_t *tf, int force) {
+    if (current == NULL || task_count <= 1)
+        return 0;
+
+    save_trap_context(current, tf);
+
+    if (!force) {
+        current->runtime_ticks++;
+
+        if (scheduler_policy == SCHED_FCFS &&
+            current->pid != 0 && current->state == TASK_RUNNING)
+            return 0;
+
+        if (scheduler_policy == SCHED_RR &&
+            current->state == TASK_RUNNING && current->pid != 0) {
+            if (current->ticks_left > 1) {
+                current->ticks_left--;
+                return 0;
+            }
+        }
+
+        if (current->pid == 0 && !has_ready_non_idle())
+            return 0;
+    }
+
+    struct task *prev = current;
+    if (prev->state == TASK_RUNNING) {
+        prev->state = TASK_READY;
+        prev->ready_order = ++order_counter;
+    }
+
+    struct task *next = select_next();
+    if (next == NULL) {
+        if (prev->state == TASK_READY) {
+            prev->state = TASK_RUNNING;
+            prev->ticks_left = prev->time_slice;
+        }
+        return 0;
+    }
+
+    next->state = TASK_RUNNING;
+    next->ticks_left = next->time_slice;
+    next->context_switches++;
+    current = next;
+    restore_trap_context(next, tf);
+    return next != prev;
 }
 
 void task_init(void) {
     for (int i = 0; i < MAX_TASKS; i++) {
         tasks[i].state = TASK_UNUSED;
+        tasks[i].pid = -1;
+        tasks[i].ppid = -1;
+        tasks[i].stack = NULL;
+        tasks[i].has_user_space = 0;
+        tasks[i].name[0] = '\0';
     }
-    task_count = 0;
 
-    /* task[0] 为初始 boot 任务，当前正在执行 */
-    tasks[0].state  = TASK_RUNNING;
-    tasks[0].name   = "idle";
-    tasks[0].stack  = NULL;  /* 使用启动栈 _stack_top */
-    tasks[0].parent = -1;
-    current = &tasks[0];
     task_count = 1;
+    next_pid = 1;
+    order_counter = 0;
+    switch_samples = 0;
+    max_switch_ticks = 0;
 
-    printk("Task subsystem initialized (idle task as task[0]).\n");
+    tasks[0].state = TASK_RUNNING;
+    tasks[0].pid = 0;
+    tasks[0].ppid = -1;
+    tasks[0].stack = NULL;
+    tasks[0].time_slice = scheduler_quantum;
+    tasks[0].ticks_left = scheduler_quantum;
+    tasks[0].created_order = ++order_counter;
+    tasks[0].ready_order = tasks[0].created_order;
+    tasks[0].trap_ctx.satp = csr_read(satp);
+    tasks[0].trap_ctx.status = trap_status_read() | SSTATUS_SPP;
+    copy_name(tasks[0].name, "idle");
+    current = &tasks[0];
+
+    printk("Process subsystem initialized: policy=%s quantum=%d tick(s)\n",
+           task_scheduler_name(), (int)scheduler_quantum);
 }
 
 int task_create(void (*entry)(void), const char *name) {
-    if (task_count >= MAX_TASKS)
+    if (entry == NULL || task_count >= MAX_TASKS)
         return -1;
 
-    /* 找一个空闲槽位 */
-    int tid = -1;
-    for (int i = 0; i < MAX_TASKS; i++) {
+    int slot = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
         if (tasks[i].state == TASK_UNUSED) {
-            tid = i;
+            slot = i;
             break;
         }
     }
-    if (tid < 0)
+    if (slot < 0)
         return -1;
 
-    struct task *t = &tasks[tid];
-
-    /* 分配内核栈页 */
-    t->stack = kalloc();
-    if (t->stack == NULL)
+    struct task *task = &tasks[slot];
+    void *stack = kalloc();
+    if (stack == NULL)
         return -1;
 
-    /*
-     * 初始化上下文：
-     *   sp 指向栈顶（栈从高地址向低地址增长）
-     *   ra 指向任务入口函数
-     *   callee-saved 清零
-     */
-    t->ctx.ra  = (uint64_t)entry;
-    t->ctx.sp  = (uint64_t)t->stack + PAGE_SIZE;
-    t->ctx.s0  = 0;
-    t->ctx.s1  = 0;
-    t->ctx.s2  = 0;
-    t->ctx.s3  = 0;
-    t->ctx.s4  = 0;
-    t->ctx.s5  = 0;
-    t->ctx.s6  = 0;
-    t->ctx.s7  = 0;
-    t->ctx.s8  = 0;
-    t->ctx.s9  = 0;
-    t->ctx.s10 = 0;
-    t->ctx.s11 = 0;
+    for (int i = 0; i < TASK_REG_COUNT; i++)
+        task->trap_ctx.regs[i] = 0;
 
-    t->state  = TASK_READY;
-    t->name   = name;
-    t->parent = (current != NULL) ? (int)(current - tasks) : -1;
+    task->stack = stack;
+    task->pid = next_pid++;
+    task->ppid = current != NULL ? current->pid : -1;
+    task->state = TASK_READY;
+    task->exit_code = 0;
+    task->wait_target = -1;
+    task->wait_channel = NULL;
+    task->time_slice = scheduler_quantum;
+    task->ticks_left = scheduler_quantum;
+    task->created_order = ++order_counter;
+    task->ready_order = task->created_order;
+    task->runtime_ticks = 0;
+    task->context_switches = 0;
+    task->has_user_space = 0;
+    copy_name(task->name, name);
+
+    task->ctx.ra = (uint64_t)entry;
+    task->ctx.sp = (uint64_t)stack + PAGE_SIZE;
+    task->trap_ctx.regs[2] = task->ctx.sp;
+    task->trap_ctx.epc = (uint64_t)entry;
+    task->trap_ctx.status = trap_status_read() | SSTATUS_SPP | SSTATUS_SPIE;
+    task->trap_ctx.satp = csr_read(satp);
     task_count++;
 
-    printk("Created task '%s' (tid=%d, stack=%lx, entry=%lx)\n",
-           t->name, tid, (uint64_t)t->stack, (uint64_t)entry);
-    return tid;
+    printk("Created process '%s' pid=%d ppid=%d stack=%lx entry=%lx\n",
+           task->name, task->pid, task->ppid,
+           (uint64_t)task->stack, (uint64_t)entry);
+    return task->pid;
+}
+
+int task_fork_from_trap(uint64_t *tf, uint64_t child_epc,
+                        const struct task_address_space *address_space) {
+    if (current == NULL || tf == NULL || address_space == NULL ||
+        task_count >= MAX_TASKS)
+        return -1;
+
+    int slot = -1;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == TASK_UNUSED) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0)
+        return -1;
+
+    void *kernel_stack = kalloc();
+    if (kernel_stack == NULL)
+        return -1;
+
+    struct task *child = &tasks[slot];
+    for (int i = 0; i < TASK_REG_COUNT; i++)
+        child->trap_ctx.regs[i] = tf[i];
+
+    child->stack = kernel_stack;
+    child->pid = next_pid++;
+    child->ppid = current->pid;
+    child->state = TASK_READY;
+    child->exit_code = 0;
+    child->wait_target = -1;
+    child->wait_channel = NULL;
+    child->time_slice = scheduler_quantum;
+    child->ticks_left = scheduler_quantum;
+    child->created_order = ++order_counter;
+    child->ready_order = child->created_order;
+    child->runtime_ticks = 0;
+    child->context_switches = 0;
+    child->has_user_space = 1;
+    child->address_space = *address_space;
+    copy_name(child->name, "fork-child");
+
+    child->trap_ctx.regs[10] = 0; /* fork 在子进程返回 0 */
+    child->trap_ctx.epc = child_epc;
+    child->trap_ctx.status = trap_status_read() & ~SSTATUS_SPP;
+    child->trap_ctx.satp = address_space->satp;
+    task_count++;
+    printk("fork: parent=%d child=%d (independent satp=%lx)\n",
+           current->pid, child->pid, child->trap_ctx.satp);
+    task_dump_tree();
+    return child->pid;
+}
+
+int task_attach_address_space(const struct task_address_space *address_space) {
+    if (current == NULL || address_space == NULL)
+        return -1;
+    current->address_space = *address_space;
+    current->has_user_space = 1;
+    current->trap_ctx.satp = address_space->satp;
+    return 0;
+}
+
+struct task_address_space *task_current_address_space(void) {
+    if (current == NULL || !current->has_user_space)
+        return NULL;
+    return &current->address_space;
 }
 
 void yield(void) {
@@ -106,185 +311,251 @@ void yield(void) {
         return;
 
     struct task *prev = current;
-    struct task *next = schedule();
-
-    if (next == NULL || next == prev)
-        return;
-
-    if (prev->state == TASK_RUNNING)
+    if (prev->state == TASK_RUNNING) {
         prev->state = TASK_READY;
-    next->state = TASK_RUNNING;
-    current = next;
+        prev->ready_order = ++order_counter;
+    }
 
+    struct task *next = select_next();
+    if (next == NULL || next == prev) {
+        prev->state = TASK_RUNNING;
+        return;
+    }
+
+    next->state = TASK_RUNNING;
+    next->ticks_left = next->time_slice;
+    next->context_switches++;
+    current = next;
     switch_to(&prev->ctx, &next->ctx);
 }
 
-/*
- * sched_tick() — 抢占式调度入口
- *
- * 由 trap_handler() 在定时器中断时调用。
- * 运行在 trap_entry 保存的栈帧之上（sp 指向 trap frame 底部）。
- *
- * 核心逻辑：
- *   1. 从 trap frame 中提取当前任务的 callee-saved 寄存器，保存到 current->ctx
- *   2. 调用 schedule() 选择下一个就绪任务
- *   3. 将下一个任务的 ctx 写回 trap frame 和 sepc
- *   4. trap_entry 的尾随后续恢复寄存器 + sret 时，
- *      将自然跳转到新任务的执行流
- *
- * trap frame 布局（trap.S 定义，256 字节）：
- *   tf[0 ] = sp+0   未使用（x0 硬连线零）
- *   tf[1 ] = sp+8   x1  (ra)
- *   tf[2 ] = sp+16  x2  (sp_original) — 进入 trap 前的 sp
- *   tf[3 ] = sp+24  x3  (gp)
- *   tf[4 ] = sp+32  x4  (tp)
- *   tf[5 ] = sp+40  x5  (t0)
- *   tf[6 ] = sp+48  x6  (t1)
- *   tf[7 ] = sp+56  x7  (t2)
- *   tf[8 ] = sp+64  x8  (s0/fp)
- *   tf[9 ] = sp+72  x9  (s1)
- *   tf[10] = sp+80  x10 (a0)
- *   tf[11] = sp+88  x11 (a1)
- *   tf[12] = sp+96  x12 (a2)
- *   tf[13] = sp+104 x13 (a3)
- *   tf[14] = sp+112 x14 (a4)
- *   tf[15] = sp+120 x15 (a5)
- *   tf[16] = sp+128 x16 (a6)
- *   tf[17] = sp+136 x17 (a7)
- *   tf[18] = sp+144 x18 (s2)
- *   tf[19] = sp+152 x19 (s3)
- *   tf[20] = sp+160 x20 (s4)
- *   tf[21] = sp+168 x21 (s5)
- *   tf[22] = sp+176 x22 (s6)
- *   tf[23] = sp+184 x23 (s7)
- *   tf[24] = sp+192 x24 (s8)
- *   tf[25] = sp+200 x25 (s9)
- *   tf[26] = sp+208 x26 (s10)
- *   tf[27] = sp+216 x27 (s11)
- *   tf[28] = sp+224 x28 (t3)
- *   tf[29] = sp+232 x29 (t4)
- *   tf[30] = sp+240 x30 (t5)
- *   tf[31] = sp+248 x31 (t6)
- */
-void sched_tick(uint64_t *tf) {
-    if (current == NULL || task_count <= 1)
-        return;
-
-    /* tf 由 trap_entry 通过 trap_handler 传入，指向栈上的 trap frame 基址 */
-
-    /*
-     * 保存当前任务上下文：
-     *   ra  = sepc（被中断的指令地址，sret 后应返回此处）
-     *   sp  = tf[2]（进入 trap 前的原始 sp）
-     *   s0-s11 直接从 trap frame 中读取
-     *
-     * 注意：caller-saved 寄存器（ra/a0-a7/t0-t6）不需要保存，
-     * trap_entry 已经把它们保存在 trap frame 中，后续会由尾随恢复。
-     */
-    current->ctx.ra  = trap_epc_read();
-    current->ctx.sp  = tf[2];
-    current->ctx.s0  = tf[8];
-    current->ctx.s1  = tf[9];
-    current->ctx.s2  = tf[18];
-    current->ctx.s3  = tf[19];
-    current->ctx.s4  = tf[20];
-    current->ctx.s5  = tf[21];
-    current->ctx.s6  = tf[22];
-    current->ctx.s7  = tf[23];
-    current->ctx.s8  = tf[24];
-    current->ctx.s9  = tf[25];
-    current->ctx.s10 = tf[26];
-    current->ctx.s11 = tf[27];
-
-    struct task *next = schedule();
-    if (next == NULL || next == current)
-        return;
-
-    if (current->state == TASK_RUNNING)
-        current->state = TASK_READY;
-    next->state = TASK_RUNNING;
-
-    /*
-     * 恢复下一个任务上下文：
-     *   1. 将 next->ctx 中的 callee-saved 寄存器写回 trap frame
-     *   2. 将 sepc 设为 next->ctx.ra（sret 时将跳转到此处）
-     *
-     * 对于新创建的任务：ctx.ra = entry, ctx.sp = 栈顶, ctx.s*=0
-     *   → trap_entry 尾随恢复 sp 到新任务栈 + sret 跳转到 entry ✓
-     *
-     * 对于被抢占的任务：ctx 保存着被中断时的完整 callee-saved 状态
-     *   → trap_entry 尾随恢复 sp 到任务原栈 + sret 跳转到被中断指令 ✓
-     */
-    trap_epc_write(next->ctx.ra);
-    tf[2]  = next->ctx.sp;
-    tf[8]  = next->ctx.s0;
-    tf[9]  = next->ctx.s1;
-    tf[18] = next->ctx.s2;
-    tf[19] = next->ctx.s3;
-    tf[20] = next->ctx.s4;
-    tf[21] = next->ctx.s5;
-    tf[22] = next->ctx.s6;
-    tf[23] = next->ctx.s7;
-    tf[24] = next->ctx.s8;
-    tf[25] = next->ctx.s9;
-    tf[26] = next->ctx.s10;
-    tf[27] = next->ctx.s11;
-
-    current = next;
+int sched_tick(uint64_t *tf) {
+    uint64_t start = timer_now();
+    int switched = switch_from_trap(tf, 0);
+    if (switched) {
+        uint64_t elapsed = timer_now() - start;
+        switch_samples++;
+        if (elapsed > max_switch_ticks)
+            max_switch_ticks = elapsed;
+    }
+    return switched;
 }
 
-/*
- * task_exit() — 将当前任务标记为 ZOMBIE
- *
- * 由 sys_exit 调用。仅设置状态，实际的上下文切换
- * 由 trap_handler 在返回前调用 sched_tick 完成。
- */
-void task_exit(void) {
-    if (current == NULL)
+int task_reschedule(uint64_t *tf) {
+    uint64_t start = timer_now();
+    int switched = switch_from_trap(tf, 1);
+    if (switched) {
+        uint64_t elapsed = timer_now() - start;
+        switch_samples++;
+        if (elapsed > max_switch_ticks)
+            max_switch_ticks = elapsed;
+    }
+    return switched;
+}
+
+void task_exit(int exit_code) {
+    if (current == NULL || current->pid == 0)
         return;
+    current->exit_code = exit_code;
     current->state = TASK_ZOMBIE;
+
+    struct task *parent = find_pid(current->ppid);
+    if (parent != NULL && parent->state == TASK_BLOCKED &&
+        (parent->wait_target < 0 || parent->wait_target == current->pid)) {
+        parent->state = TASK_READY;
+        parent->wait_channel = NULL;
+        parent->ready_order = ++order_counter;
+    }
+
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].ppid == current->pid)
+            tasks[i].ppid = 0;
+    }
 }
 
-/*
- * task_wait() — 回收一个 ZOMBIE 子任务
- *
- * 遍历任务表，找到第一个属于当前任务的 ZOMBIE 子任务，
- * 释放其内核栈并标记为 UNUSED。
- *
- * 返回：被回收任务的 tid，没有可回收的子任务则返回 -1。
- */
-int task_wait(void) {
+int task_waitpid(int pid, int *status, int nohang) {
     if (current == NULL)
         return -1;
 
-    int parent_tid = (int)(current - tasks);
-    for (int i = 0; i < MAX_TASKS; i++) {
-        if (tasks[i].state == TASK_ZOMBIE &&
-            tasks[i].parent == parent_tid) {
-            /* 释放内核栈 */
-            if (tasks[i].stack != NULL) {
-                kfree(tasks[i].stack);
-                tasks[i].stack = NULL;
-            }
-            tasks[i].state  = TASK_UNUSED;
-            tasks[i].parent = -1;
-            task_count--;
-            printk("task_wait: reaped '%s' (tid=%d)\n",
-                   tasks[i].name, i);
-            return i;
+    int has_child = 0;
+    for (int i = 1; i < MAX_TASKS; i++) {
+        struct task *child = &tasks[i];
+        if (child->state == TASK_UNUSED || child->ppid != current->pid)
+            continue;
+        if (pid > 0 && child->pid != pid)
+            continue;
+
+        has_child = 1;
+        if (child->state != TASK_ZOMBIE)
+            continue;
+
+        int child_pid = child->pid;
+        if (status != NULL)
+            *status = child->exit_code;
+        printk("waitpid: parent=%d reaped child=%d exit=%d\n",
+               current->pid, child_pid, child->exit_code);
+        if (child->stack != NULL)
+            kfree(child->stack);
+        if (child->has_user_space)
+            user_space_destroy(&child->address_space);
+
+        child->stack = NULL;
+        child->has_user_space = 0;
+        child->state = TASK_UNUSED;
+        child->pid = -1;
+        child->ppid = -1;
+        child->name[0] = '\0';
+        task_count--;
+        return child_pid;
+    }
+
+    if (!has_child)
+        return -1;
+    if (nohang)
+        return 0;
+
+    current->wait_target = pid;
+    current->wait_channel = current;
+    current->state = TASK_BLOCKED;
+    return TASK_WAIT_BLOCKED;
+}
+
+int task_wait(void) {
+    int pid = task_waitpid(-1, NULL, 1);
+    return pid == 0 ? -1 : pid;
+}
+
+int task_current_state(void) {
+    return current == NULL ? TASK_UNUSED : current->state;
+}
+
+int task_current_pid(void) {
+    return current == NULL ? -1 : current->pid;
+}
+
+uint64_t task_current_kernel_stack_top(void) {
+    if (current == NULL || current->stack == NULL)
+        return (uint64_t)&_stack_top;
+    return (uint64_t)current->stack + PAGE_SIZE;
+}
+
+void task_prepare_trap_return(void) {
+    trap_scratch_write(task_current_kernel_stack_top());
+}
+
+void task_block(const void *channel) {
+    if (current == NULL || current->pid == 0)
+        return;
+
+    uint64_t irq_state = local_irq_save();
+    current->wait_channel = channel;
+    current->state = TASK_BLOCKED;
+    local_irq_restore(irq_state);
+#ifdef __riscv
+    __asm__ volatile(
+        "li a7, 124\n"
+        "ecall\n"
+        :
+        :
+        : "a7"
+    );
+#endif
+}
+
+int task_wake_one(const void *channel) {
+    uint64_t irq_state = local_irq_save();
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == TASK_BLOCKED &&
+            tasks[i].wait_channel == channel) {
+            tasks[i].state = TASK_READY;
+            tasks[i].wait_channel = NULL;
+            tasks[i].ready_order = ++order_counter;
+            local_irq_restore(irq_state);
+            return tasks[i].pid;
         }
     }
+    local_irq_restore(irq_state);
     return -1;
 }
 
-/*
- * task_current_state() — 获取当前任务状态
- *
- * 由 trap_handler 在 syscall_dispatch 后检查
- * 当前任务是否已变为 ZOMBIE，以决定是否需要强制重调度。
- */
-int task_current_state(void) {
-    if (current == NULL)
-        return TASK_UNUSED;
-    return current->state;
+int task_wake_all(const void *channel) {
+    int count = 0;
+    uint64_t irq_state = local_irq_save();
+    for (int i = 1; i < MAX_TASKS; i++) {
+        if (tasks[i].state == TASK_BLOCKED &&
+            tasks[i].wait_channel == channel) {
+            tasks[i].state = TASK_READY;
+            tasks[i].wait_channel = NULL;
+            tasks[i].ready_order = ++order_counter;
+            count++;
+        }
+    }
+    local_irq_restore(irq_state);
+    return count;
+}
+
+void task_set_scheduler(enum sched_policy policy) {
+    if (policy != SCHED_FCFS && policy != SCHED_RR)
+        return;
+    scheduler_policy = policy;
+}
+
+enum sched_policy task_get_scheduler(void) {
+    return scheduler_policy;
+}
+
+const char *task_scheduler_name(void) {
+    return scheduler_policy == SCHED_FCFS ? "FCFS" : "RR";
+}
+
+void task_set_quantum(unsigned int ticks) {
+    if (ticks == 0)
+        ticks = 1;
+    scheduler_quantum = ticks;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_UNUSED) {
+            tasks[i].time_slice = ticks;
+            tasks[i].ticks_left = ticks;
+        }
+    }
+}
+
+unsigned int task_get_quantum(void) {
+    return scheduler_quantum;
+}
+
+void task_dump_processes(void) {
+    printk("PID  PPID STATE    TICKS SWITCH NAME\n");
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state == TASK_UNUSED)
+            continue;
+        printk("%d    %d    %s  %ld  %ld  %s\n",
+               tasks[i].pid, tasks[i].ppid, state_name(tasks[i].state),
+               (long)tasks[i].runtime_ticks,
+               (long)tasks[i].context_switches, tasks[i].name);
+    }
+    printk("[%s] context switch max=%ld ticks, limit=%ld ticks (1ms), samples=%ld\n",
+           max_switch_ticks < TIMER_TICKS_PER_MS ? "PASS" : "FAIL",
+           (long)max_switch_ticks, (long)TIMER_TICKS_PER_MS,
+           (long)switch_samples);
+}
+
+static void dump_tree_node(int pid, int depth) {
+    struct task *task = find_pid(pid);
+    if (task == NULL)
+        return;
+
+    for (int i = 0; i < depth; i++)
+        printk("  ");
+    printk("%s(%d) [%s]\n", task->name, task->pid, state_name(task->state));
+
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].ppid == pid)
+            dump_tree_node(tasks[i].pid, depth + 1);
+    }
+}
+
+void task_dump_tree(void) {
+    printk("Process tree:\n");
+    dump_tree_node(0, 0);
 }

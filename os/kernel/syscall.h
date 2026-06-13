@@ -17,6 +17,10 @@
 #define SYS_WRITE   64    /* 向控制台或文件输出 */
 #define SYS_READ    63    /* 从控制台或文件读取 */
 #define SYS_WAIT    95    /* 回收 ZOMBIE 子任务 */
+#define SYS_WAITPID 260   /* 等待指定子进程 */
+#define SYS_FORK    220   /* 克隆当前用户进程 */
+#define SYS_EXEC    221   /* 替换当前用户程序映像 */
+#define SYS_YIELD   124   /* 内核任务阻塞后触发完整上下文调度 */
 #define SYS_OPEN    56    /* 创建 RAMFS 文件，返回 fd */
 #define SYS_CLOSE   57    /* 关闭 RAMFS 文件 */
 
@@ -34,6 +38,10 @@
  *   tf[12] = a2  (参数3)
  *   tf[17] = a7  (系统调用号)
  */
-void syscall_dispatch(uint64_t *tf);
+/*
+ * 返回1：系统调用已替换sepc。
+ * 返回2：阻塞调度前应将sepc推进到ecall之后。
+ */
+int syscall_dispatch(uint64_t *tf);
 
 #endif /* MINIOS_SYSCALL_H */

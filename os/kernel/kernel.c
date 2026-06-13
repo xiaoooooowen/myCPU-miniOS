@@ -7,7 +7,63 @@
 #include "trap.h"
 #include "user.h"
 #include "ramfs.h"
+#include "sync.h"
 #include "../include/csr.h"
+
+static volatile int fcfs_trace = 0;
+static volatile int sync_counter = 0;
+static struct semaphore sync_gate;
+static struct mutex sync_mutex;
+
+static void process_exit(int code) {
+#ifdef __riscv
+    __asm__ volatile(
+        "mv a0, %0\n"
+        "li a7, 93\n"
+        "ecall\n"
+        :
+        : "r"((uint64_t)code)
+        : "a0", "a7"
+    );
+#else
+    (void)code;
+#endif
+    while (1)
+        ;
+}
+
+static void fcfs_task_a(void) {
+    fcfs_trace = fcfs_trace * 10 + 1;
+    printk("[FCFS-A] start/end\n");
+    fcfs_trace = fcfs_trace * 10 + 1;
+    process_exit(0);
+}
+
+static void fcfs_task_b(void) {
+    fcfs_trace = fcfs_trace * 10 + 2;
+    printk("[FCFS-B] start/end\n");
+    fcfs_trace = fcfs_trace * 10 + 2;
+    process_exit(0);
+}
+
+static void sync_task_a(void) {
+    printk("[Sync-Notifier] lock and signal\n");
+    mutex_lock(&sync_mutex);
+    sync_counter++;
+    mutex_unlock(&sync_mutex);
+    sem_post(&sync_gate);
+    process_exit(0);
+}
+
+static void sync_task_b(void) {
+    printk("[Sync-Waiter] BLOCKED on semaphore\n");
+    sem_wait(&sync_gate);
+    printk("[Sync-Waiter] READY after wakeup\n");
+    mutex_lock(&sync_mutex);
+    sync_counter++;
+    mutex_unlock(&sync_mutex);
+    process_exit(0);
+}
 
 /* Phase 7 抢占式调度测试任务：不调用 yield()，纯靠定时器中断切换 */
 static void task_a(void) {
@@ -262,10 +318,35 @@ void kernel_main(void) {
     ramfs_close(fd_c);
     printk("RAMFS test passed!\n");
 
-    /* 模块六：任务状态与 exit/wait 雏形 */
-    printk("\n--- Phase 12: Task State & exit/wait Test ---\n");
-
+    printk("\n--- Phase 12A: FCFS Scheduler Test ---\n");
+    task_set_scheduler(SCHED_FCFS);
     task_init();
+    fcfs_trace = 0;
+    task_create(fcfs_task_a, "fcfs_a");
+    task_create(fcfs_task_b, "fcfs_b");
+    local_irq_enable();
+    timer_init();
+    trap_set_silent(1);
+
+    int fcfs_reaped = 0;
+    while (fcfs_reaped < 2) {
+        int pid = task_wait();
+        if (pid > 0)
+            fcfs_reaped++;
+    }
+    printk("[%s] FCFS non-preemptive order (trace=%d, expected=1122)\n",
+           fcfs_trace == 1122 ? "PASS" : "FAIL", fcfs_trace);
+
+    /* 重新建立RR演示基线。 */
+    printk("\n--- Phase 12B: Process, RR & Synchronization Test ---\n");
+    local_irq_disable();
+    task_set_scheduler(SCHED_RR);
+    task_init();
+    task_set_quantum(1);
+    timer_set_timeslice_ms(10);
+    sem_init(&sync_gate, 0);
+    mutex_init(&sync_mutex);
+    sync_counter = 0;
     printk("Creating tasks...\n");
 
     /*
@@ -277,6 +358,9 @@ void kernel_main(void) {
     task_create(task_a, "task_a");
     task_create(user_task_entry, "user_task");
     task_create(short_lived_task, "short_lived");
+    task_create(sync_task_b, "sync_waiter");
+    task_create(sync_task_a, "sync_notifier");
+    task_dump_tree();
 
     /* 使能 S 模式全局中断 + 启动定时器中断 — 周期性触发抢占式调度 */
     local_irq_enable();
@@ -301,8 +385,14 @@ void kernel_main(void) {
             reap_count++;
         }
 
-        /* 回收了 2 个僵尸任务（user_task + short_lived）后主动停机 */
-        if (reap_count >= 2) {
+        /*
+         * user parent、short_lived、sync_a、sync_b 共4个直接子进程。
+         * fork child 由用户父进程通过 waitpid 回收。
+         */
+        if (reap_count >= 4) {
+            printk("[%s] semaphore + mutex + BLOCKED wakeup (counter=%d)\n",
+                   sync_counter == 2 ? "PASS" : "FAIL", sync_counter);
+            task_dump_processes();
             printk("\n--- All zombies reaped, halting ---\n");
             *(volatile uint32_t *)0x100000 = 0x5555;
             while (1)
@@ -318,4 +408,3 @@ void kernel_main(void) {
         }
     }
 }
-

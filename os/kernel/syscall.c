@@ -3,6 +3,9 @@
 #include "printk.h"
 #include "task.h"
 #include "ramfs.h"
+#include "user.h"
+#include "../include/csr.h"
+#include <stddef.h>
 
 /* TEST_FINISH 设备地址：向此地址写入任意值通知模拟器停止运行 */
 #define TEST_FINISH 0x100000
@@ -79,7 +82,7 @@ static void sys_exit(uint64_t code) {
     printk("\n--- Task Exit (code=%ld) ---\n", (long)code);
 
     /* 尝试将当前任务标记为 ZOMBIE */
-    task_exit();
+    task_exit((int)code);
 
     /* 若 task_exit 未成功标记（current 为 NULL），则直接停机 */
     if (task_current_state() != TASK_ZOMBIE) {
@@ -99,7 +102,34 @@ static void sys_exit(uint64_t code) {
  */
 static uint64_t sys_wait(uint64_t ignored) {
     (void)ignored;
-    return (uint64_t)task_wait();
+    return (uint64_t)task_waitpid(-1, NULL, 0);
+}
+
+static uint64_t sys_waitpid(uint64_t pid, uint64_t status, uint64_t options) {
+    int *status_ptr = status == 0 ? NULL : (int *)status;
+    int nohang = (options & 1) != 0;
+    return (uint64_t)task_waitpid((int)pid, status_ptr, nohang);
+}
+
+static uint64_t sys_fork(uint64_t *tf) {
+    struct task_address_space *parent_space = task_current_address_space();
+    if (parent_space == NULL)
+        return (uint64_t)-1;
+
+    struct task_address_space child_space = {0};
+    if (user_space_clone(&child_space, parent_space) < 0)
+        return (uint64_t)-1;
+
+    int pid = task_fork_from_trap(tf, trap_epc_read() + 4, &child_space);
+    if (pid < 0) {
+        user_space_destroy(&child_space);
+        return (uint64_t)-1;
+    }
+    return (uint64_t)pid;
+}
+
+static int sys_exec(uint64_t *tf, uint64_t image_id) {
+    return user_exec(tf, (int)image_id);
 }
 
 /*
@@ -138,7 +168,7 @@ static uint64_t sys_close(uint64_t fd) {
  * 从 trap frame 中读取 a7(系统调用号) 和 a0-a2(参数)，
  * 分派到对应的处理函数，将返回值写回 a0。
  */
-void syscall_dispatch(uint64_t *tf) {
+int syscall_dispatch(uint64_t *tf) {
     uint64_t nr = tf[17];  /* a7 = 系统调用号 */
     uint64_t arg0 = tf[10]; /* a0 = 参数1 / 返回值 */
     uint64_t arg1 = tf[11]; /* a1 = 参数2 */
@@ -157,6 +187,19 @@ void syscall_dispatch(uint64_t *tf) {
         case SYS_WAIT:
             tf[10] = sys_wait(arg0);
             break;
+        case SYS_WAITPID:
+            tf[10] = sys_waitpid(arg0, arg1, arg2);
+            break;
+        case SYS_FORK:
+            tf[10] = sys_fork(tf);
+            break;
+        case SYS_EXEC:
+            if (sys_exec(tf, arg0) == 0)
+                return 1;
+            tf[10] = (uint64_t)-1;
+            break;
+        case SYS_YIELD:
+            return 2;
         case SYS_OPEN:
             tf[10] = sys_open(arg0, arg1);
             break;
@@ -168,4 +211,5 @@ void syscall_dispatch(uint64_t *tf) {
             tf[10] = (uint64_t)-1;  /* 返回 -1 表示错误 */
             break;
     }
+    return 0;
 }

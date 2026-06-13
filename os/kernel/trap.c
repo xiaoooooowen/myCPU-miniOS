@@ -37,6 +37,7 @@ void trap_handler(uint64_t *tf) {
                 if (!trap_silent) {
                     printk("=== TRAP END ===\n");
                 }
+                task_prepare_trap_return();
                 return;
             case 1:
                 printk("Type: Interrupt (%lx)\n", cause);
@@ -55,6 +56,7 @@ void trap_handler(uint64_t *tf) {
         if (!trap_silent) {
             printk("=== TRAP END ===\n");
         }
+        task_prepare_trap_return();
         return;
     }
 
@@ -66,22 +68,29 @@ void trap_handler(uint64_t *tf) {
     printk("Type: Exception (%lx)\n", cause);
 
     int rescheduled = 0;  /* 是否已通过 sched_tick 切换上下文 */
+    int context_replaced = 0;
 
     switch (cause) {
         case 8:
             printk("  -> Environment call from U-mode\n");
-            syscall_dispatch(tf);
-            if (task_current_state() == TASK_ZOMBIE) {
-                sched_tick(tf);
-                rescheduled = 1;
+            context_replaced = syscall_dispatch(tf);
+            if (task_current_state() == TASK_ZOMBIE ||
+                task_current_state() == TASK_BLOCKED) {
+                if (task_current_state() == TASK_BLOCKED &&
+                    context_replaced == 2)
+                    trap_epc_write(epc + 4);
+                rescheduled = task_reschedule(tf);
             }
             break;
         case 9:
             printk("  -> Environment call from S-mode\n");
-            syscall_dispatch(tf);
-            if (task_current_state() == TASK_ZOMBIE) {
-                sched_tick(tf);
-                rescheduled = 1;
+            context_replaced = syscall_dispatch(tf);
+            if (task_current_state() == TASK_ZOMBIE ||
+                task_current_state() == TASK_BLOCKED) {
+                if (task_current_state() == TASK_BLOCKED &&
+                    context_replaced == 2)
+                    trap_epc_write(epc + 4);
+                rescheduled = task_reschedule(tf);
             }
             break;
         case 3:
@@ -100,7 +109,7 @@ void trap_handler(uint64_t *tf) {
     /* 异常：推进 sepc 跳过触发异常的指令
      * 注意：若已通过 sched_tick 重调度，sepc 已被设置为新任务的入口，
      * 不应覆盖 */
-    if (!rescheduled) {
+    if (!rescheduled && !context_replaced) {
         trap_epc_write(epc + 4);
     }
 
@@ -114,6 +123,7 @@ void trap_handler(uint64_t *tf) {
         status |= SSTATUS_SPP;
         csr_write(sstatus, status);
     }
+    task_prepare_trap_return();
 }
 
 /* 进入抢占式调度阶段后，静默定时器中断的 trap 输出 */
