@@ -99,7 +99,9 @@ kill -15 PID
 
 Shell 内建命令为 `help`、`cd`、`exit`、`exec` 和兼容命令 `run`。
 其他命令都通过 `PATH=/bin:/tests` 搜索，并使用 `fork + execve`
-执行。末尾 `&` 启动后台进程。
+执行。末尾 `&` 启动后台进程。提示符显示规范化的当前目录，例如
+`minios:/>` 和 `minios:/tmp/demo/>`；目录参数既可写作 `demo`，也可
+写作 `demo/`。`ps` 使用固定列宽输出，便于观察后台任务状态。
 
 ## 验证
 

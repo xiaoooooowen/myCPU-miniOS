@@ -58,13 +58,39 @@ static int next_word(char **cursor_pointer, char *destination, int capacity) {
             break;
         cursor++;
         if (quote != 0) {
+            if ((unsigned char)character == 0xE2 &&
+                (unsigned char)*cursor == 0x80) {
+                char next = *(cursor + 1);
+                if ((next == '\x9D' && quote == '"') ||
+                    (next == '\x99' && quote == '\'')) {
+                    cursor += 2;
+                    quote = 0;
+                    continue;
+                }
+            }
             if (character == quote) {
                 quote = 0;
                 continue;
             }
-        } else if (character == '\'' || character == '"') {
-            quote = character;
-            continue;
+        } else {
+            if ((unsigned char)character == 0xE2 &&
+                (unsigned char)*cursor == 0x80) {
+                char next = *(cursor + 1);
+                if (next == '\x9C') {
+                    cursor += 2;
+                    quote = '"';
+                    continue;
+                }
+                if (next == '\x98') {
+                    cursor += 2;
+                    quote = '\'';
+                    continue;
+                }
+            }
+            if (character == '\'' || character == '"') {
+                quote = character;
+                continue;
+            }
         }
         if (character == '\\' && *cursor != '\0')
             character = *cursor++;
@@ -189,6 +215,19 @@ static void print_help(void) {
     puts("syntax: COMMAND [ARGS] [< FILE] [> FILE|>> FILE] [&]");
 }
 
+static void print_prompt(void) {
+    char cwd[256];
+    if (getcwd(cwd, sizeof(cwd)) < 0) {
+        write(1, "minios:?> ", 10);
+        return;
+    }
+    write(1, "minios:", 7);
+    write(1, cwd, strlen(cwd));
+    if (strcmp(cwd, "/") != 0)
+        write(1, "/", 1);
+    write(1, "> ", 2);
+}
+
 int main(int argc, char **argv, char **initial_envp) {
     (void)argc;
     (void)argv;
@@ -196,7 +235,7 @@ int main(int argc, char **argv, char **initial_envp) {
     for (;;) {
         while (waitpid(-1, 0, WNOHANG) > 0)
             ;
-        write(1, "minios> ", 8);
+        print_prompt();
         if (read_line(shell_line, sizeof(shell_line)) < 0)
             break;
         int parsed = parse_command(shell_line, &shell_command);

@@ -93,13 +93,16 @@ make run
 
 Welcome to MiniOS.
 Type 'help' for commands.
-minios> _
+minios:/> _
 ```
 
 - Shell 是从 `/bin/shell` 加载的独立 C 语言 ELF 用户进程。
 - `/bin` 包含 `ls/cat/echo/pwd/ps/kill/env/mkdir/rm/touch/write`。
 - `/tests` 包含 `spin/fstest/forktest/argtest`。
 - 支持 PATH 搜索、argv/envp、后台进程、`exec`、`run` 和 `< > >>`。
+- 提示符显示当前工作目录，例如 `minios:/demo/>`；`cd demo` 与 `cd demo/` 均有效。
+- `ps` 使用固定列宽显示进程信息；后台 `spin` 保持静默，避免异步输出破坏输入行。
+- 命令解析支持 ASCII 引号、中文弯引号和基础反斜杠转义。
 - `fstest` 已验证 64 KiB、一级间接块和 seek；磁盘内容跨模拟器重启保留。
 - ELF loader 会跳过 `p_memsz == 0` 的空 `PT_LOAD`，避免为零长度段创建非法用户映射。
 - 每个任务使用 16 KiB、按页对齐的独立静态内核栈；已验证连续多次 `fork/exec/wait`。

@@ -5,6 +5,44 @@
 
 ***
 
+## 2026-06-15 — Shell 路径提示符与进程表显示优化
+
+### 交互改进
+
+- Shell 提示符通过 `getcwd` 显示当前工作目录。
+- 根目录提示符为 `minios:/> `，子目录示例为 `minios:/demo/> `。
+- 提示符中的目录统一以 `/` 收尾，强调当前对象是目录；实际 `cd demo` 和 `cd demo/` 两种输入都由 MiniFS 路径解析器支持。
+- 命令解析器兼容中文输入法常见的弯引号 `“...”`、`‘...’`，并继续支持 ASCII 单双引号和反斜杠转义。
+
+### ps 输出
+
+`ps` 改为固定列宽输出 PID、PPID、STATE、TICKS、SWITCH 和 NAME，使不同位数的 PID、计数器及不同长度的状态名称保持纵向对齐。
+
+### 后台程序输出
+
+`spin` 不再在启动后异步打印提示。后台进程输出曾可能插入 Shell 正在回显的命令，例如把 `ps` 撕成两行；现在 Shell 只打印 `[pid N]`，用户可通过 `ps` 查看任务并用 `kill PID` 终止。
+
+### 验证
+
+使用独立临时磁盘验证以下流程，未覆盖正式 `disk.img`：
+
+```text
+minios:/> mkdir demo
+minios:/> cd demo
+minios:/demo/> write message.txt hello MiniOS
+minios:/demo/> ls
+message.txt
+minios:/demo/> cat message.txt
+hello MiniOS
+minios:/demo/> spin &
+[pid 6]
+minios:/demo/> ps
+```
+
+确认提示符路径、无尾斜杠 `cd`、相对路径文件访问、后台任务和对齐后的进程表均正常。
+
+***
+
 ## 2026-06-15 — printf、close-on-exec 与 CEMU 运行性能修复
 
 ### 用户 libc
