@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
 > 冻结时间：2026-06-13
-> 冻结版本：阶段 0.5 至阶段 10 + 模块一至模块八全部完成
+> 冻结版本：阶段 0.5 至阶段 10 + 模块一至模块九全部完成
 
 ## 一、环境信息
 
@@ -81,7 +81,7 @@ print(''.join(chars))
 "
 ```
 
-**输出**（阶段 10 Sv39 分页模式运行，模块一主动停机）：
+**输出**（阶段 10 Sv39 分页模式 + 模块九 Shell）：
 ```
 MiniOS booting...
 Hello from kernel!
@@ -107,49 +107,19 @@ Free pages after cleanup: 32698
 Memory allocator test passed!
 --- Phase 3: ECALL Trap Test ---
 Triggering ECALL to test trap handler...
-=== TRAP ===
-scause: 0x9
-sepc:   0x800003dc
-stval:  0x73
-Type: Exception (0x9)
-  -> Environment call from S-mode
-Unknown syscall number: 0
-=== TRAP END ===
-Returned from trap handler!
 Trap round-trip successful!
 --- Phase 8: System Call Test ---
-...
 System call test passed!
-
---- Phase 11: User Mode (U-Mode) Test ---
-User mode initialized (text=0x80008000 stack=0x80009000 code=82 bytes)
-Entering user mode...
-=== TRAP ===
-scause: 0x8
-sepc:   0x10034
-stval:  0x73
-Type: Exception (0x8)
-  -> Environment call from U-mode
-Hello from user!
-=== TRAP END ===
-=== TRAP ===
-scause: 0x8
-sepc:   0x10040
-stval:  0x73
-Type: Exception (0x8)
-  -> Environment call from U-mode
-
---- System Exit (code=0) ---
+Starting shell (pid=5)...
+MiniOS shell
+Type 'help' for commands.
+minios> _
 ```
 
-- ECALL from S-mode 触发 trap → handler 解码 scause=0x9 → sepc+4 → sret 返回 → 继续执行
-- 阶段 8：通过 ecall + a7(系统调用号) + a0-a2(参数) 实现 sys_write 和 sys_exit，syscall_dispatch 读写 trap frame 完成参数传递和返回值写入
-- 定时器中断经 mideleg[5] 委托到 S 模式（cause=5, bit63 置位 = 0x8000000000000005），由 sret 返回
-- 内存分配器：内核区域约 102KB，堆区从 0x80003000 开始，剩余约 32701 页可分配。bump+free_list 混合算法，O(1) 初始化,分配/释放均页对齐
-- 协作式调度（阶段6）：3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，yield() 主动让出 CPU
-- 抢占式调度（阶段7）：定时器中断驱动 sched_tick(tf)，通过修改 trap frame 中 callee-saved 寄存器和 sepc 实现任务切换。3 个任务（idle + task_a + task_b）按 Idle → A → B 顺序轮转，每个周期约 5 次 printk 后切换，count 单调递增无错，上下文切换正确
-- S 模式内核（阶段9）：M 模式启动后通过 medeleg/mideleg 委托异常/中断给 S 模式，mret 切换到 S 模式运行 kernel_main。ECALL from S/U-mode 委托到 S 模式 trap handler，定时器中断经 mideleg[5] 委托为 S 模式定时器中断（cause=5），sret 恢复 SPP→mode
-- Sv39 虚拟内存（阶段10）：kalloc 分配 3 页（12KB）构建 Sv39 页表，根页表 vpn2=2 映射 DRAM 128MB（2MB 大页 × 64），vpn2=0 映射 MMIO（CLINT/PLIC/UART，2MB 大页）。开启 SATP 后所有已有功能（ECALL、系统调用、抢占式调度）在模拟 MMU 下正常运行。模拟器 MMU 支持 Bare/Sv39 模式、三级地址翻译、4KB/2MB 页、A/D 位自动设置、权限检查（R/W/X）和 3 种页异常（Instruction/Load/Store PageFault）
+- Shell 作为 U 模式进程运行，通过 `sys_read(0)` 逐字符读取、回显、退格支持、换行提交
+- 命令：`help` 显示帮助、`echo TEXT` 回显文本、`ps` 打印进程表、`run` fork+exec 子进程、`clear` 清屏、`exit` 退出 Shell
+- Shell exit 后 kernel_main 通过 `task_waitpid(shell_pid)` 检测到退出，写入 TEST_FINISH 主动停机
+- syscall 陷阱支持静默模式（`trap_silent=1`），Shell 运行时抑制 TRAP 日志噪音
 
 ## 四、模块完成度
 
@@ -193,13 +163,13 @@ Type: Exception (0x8)
 | 任务状态与 exit/wait 雏形 | task.h/c + syscall.h/c + trap.c + kernel.c | ✅ 完成（模块六） | TASK_BLOCKED/TASK_ZOMBIE 状态，parent 父子关系，task_exit() 标 ZOMBIE，task_wait() 回收子任务，sys_exit 变 ZOMBIE+重调度，退出任务不再占用 CPU，91/91 测试全通过 |
 | RAMFS 最小内存文件系统 | ramfs.h/c + syscall.h/c + kernel.c + Makefile | ✅ 完成（模块七） | 8 文件槽位，每个 4096 字节，create/write/read/close，sys_write/sys_read fd 分派（0=stdin, 1=stdout, >=2=RAMFS），SYS_OPEN(56)/SYS_CLOSE(57)，内核自测通过 |
 | 完整进程管理 | task.h/c + sync.h/c + user.h/c + syscall.h/c + trap.S/c | ✅ 完成（模块八） | 完整 PCB、FCFS/RR、10ms 可配置时间片、READY/RUNNING/BLOCKED/ZOMBIE、信号量、互斥锁、独立 Sv39 地址空间、fork/exec、exit/wait/waitpid、父子树与孤儿接管 |
+| 交互式 Shell | os/kernel/user_entry.S + kernel.c + syscall.c/h + trap.c | ✅ 完成（模块九） | U 模式纯汇编 Shell，逐字符行编辑（回显/退格/换行提交），help/echo/ps/run/clear/exit 命令分发，run 通过 fork+exec+waitpid 启动子进程，SYS_PS(400) 打印进程表，trap 静默模式抑制 syscall 日志噪音 |
 
 ### 未完成的扩展
 
 | 模块 | 状态 |
 |------|------|
 | 通用 ELF 文件解析器与外部程序加载 | ❌ 未开始（当前 exec 加载两个内置用户映像） |
-| 完整 Shell | ❌ 未开始 |
 
 ## 五、指令集覆盖
 
@@ -345,6 +315,30 @@ Type: Exception (0x8)
 **理由**: 开启 Sv39 分页后 CPU 所有 load/store 都经过虚拟地址翻译。UART（0x10000000）、CLINT（0x02000000）、PLIC（0x0C000000）都不在 DRAM 范围内，如果不为它们建立页表映射，printk、timer_init 等所有外设访问都会触发 Load/Store PageFault，内核立即崩溃
 **后果**: 页表从 2 页增加到 3 页（共用根页表，DRAM 和 MMIO 各一个 LV1 表），kalloc 消耗 12KB
 
+### Decision 19: 编译期 trace 开关 + 内置性能计数器
+
+**决策**: 新增 `CEMU_TRACE` CMake option 控制编译期指令级调试日志，`TRACE_LOG(...)` 宏在未定义 `CEMU_TRACE` 时展开为 `do{}while(0)` 空操作；同时在 main.cpp 中加入 `instret` 指令计数 + `std::chrono::steady_clock` 墙钟计时 + IPS 吞吐率输出
+**理由**: 模拟器运行时如果始终输出每条指令的执行日志（fetch 地址、指令码、执行结果），I/O 开销极大，Release 构建性能下降数十倍。使用编译期开关可以保证 Release 构建零开销（trace 代码被编译器完全消除），同时保留 Debug 构建时通过 `cmake -DCEMU_TRACE=ON` 一键恢复完整日志的能力。性能计数器（IPS）为模拟器优化提供量化反馈，不依赖外部 perf 工具
+**后果**:
+- `MIN_LOG_LEVEL` 默认为 `WARNING`（Release 构建），`CEMU_TRACE` 开启时设为 `DEBUG`
+- `TRACE_LOG(...)` 替代了所有 `LOG(INFO, ...)` 调用，集中在指令执行热路径
+- 退出时打印 `Instructions retired`、`Elapsed time`、`Throughput (IPS)` 三行性能指标
+- CMakeLists.txt 使用 `target_compile_definitions` 传递宏定义，影响所有链接了 `common_library` 的目标
+
+### Decision 20: U 模式纯汇编 Shell 实现
+
+**决策**: Shell 在 U 模式用纯汇编编写（user_entry.S），内核侧通过 `trap_silent` 模式抑制 syscall 相关的 TRAP 日志噪音
+**理由**: 
+- Shell 本质是无限循环「读字符→回显→提交→命令分发」的交互程序，纯汇编可以精确控制每一条指令，避免编译器引入的栈帧、库函数等额外复杂度
+- `trap_silent` 模式使 Shell 运行期间每个 SYS_READ/SYS_WRITE ecall 不再打印 `=== TRAP ===` 大段日志，用户只看到干净的 Shell 界面
+- 命令分发使用汇编级 `strcmp` + 条件分支，处理 help/echo/ps/run/clear/exit，无需任何 C runtime
+**后果**:
+- user_entry.S 从旧的 ~80 行 demo 扩展到 ~280 行完整 Shell，包含 line buffer (64B)、退格处理 (`\b \b`)、清屏 (`\033[2J\033[H`)
+- `run` 命令通过 U 模式 `fork` ecall → 子进程 `exec` ecall → 父进程 `waitpid` ecall 的经典 fork-exec-wait 三元组启动子进程
+- `SYS_PS(400)` 直接在内核端调用 `task_dump_processes()`，无需传参，返回 0
+- kernel_main 从旧的多任务 demo (idle reap zombies) 简化为 `task_create("shell") + waitpid(shell) + halt`
+- trap_handler 的 `quiet_syscall` 判断避免对每个 sys_read(0) 调用都打印 4 行 TRAP 日志
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -416,7 +410,7 @@ mycpu/
 │   │   ├── syscall.c        (系统调用：sys_write/sys_exit + trap frame 中 a0/a7 读写)
 │   │   ├── user.h           (用户模式头文件：user_init + enter_user)
 │   │   ├── user.c           (用户模式：分配物理页 + 构建用户页表 + 复制用户程序 + sret 切换)
-│   │   ├── user_entry.S     (用户程序：sys_write(1,msg,17) + sys_exit(0) 两条 ecall)
+│   │   ├── user_entry.S     (用户程序 0：交互式 Shell，纯汇编实现逐字符行编辑+命令分发)
 │   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init + 全局页表指针导出)
 │   │   ├── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP + 暴露全局页表指针)
 │   │   ├── ramfs.h          (RAMFS 头文件：文件表结构定义 + create/write/read/close 接口)
@@ -448,7 +442,6 @@ mycpu/
 | P1 | 代码整洁与稳定收尾 | 收尾 |
 | P1 | 结题报告、PPT与演示材料 | 收尾 |
 | P2 | 通用 ELF loader | 下一阶段 |
-| P2 | 完整 Shell | 下一阶段 |
 
 ## 十、本轮关键学习点
 
@@ -492,3 +485,7 @@ mycpu/
 38. **ECALL 退出后的特权级陷阱**：U 模式 ecall 进入 S 模式 trap handler，sstatus.SPP 被硬件设为 User。如果 trap handler 触发重调度（sched_tick），sret 会切换到 U 模式运行下一个内核任务——这是 bug。修复方法：重调度后手动设置 `sstatus.SPP=1`（Supervisor），确保所有内核任务运行在 S 模式。
 39. **epc+4 与 sched_tick 的竞态**：trap_handler 原本无条件执行 `epc+4`。但 sched_tick 已将 sepc 设为新任务的入口地址，如果再 +4 会跳过第一条指令。修复：引入 `rescheduled` 标志，仅在未重调度时推进 epc。
 40. **fd 作为统一抽象的价值**：内核将 fd=0/1 固定映射为 stdin/stdout（UART），fd>=2 为 RAMFS 文件。这使得 sys_write/sys_read 可以用同一个系统调用号处理控制台和文件 I/O。UNIX "一切皆文件" 哲学的微型实现。sys_open/sys_close 是后续通用文件描述符表的基础。
+41. **编译期 trace 开关优于运行时 if 判断**：使用 `#ifdef CEMU_TRACE` + 空操作宏 `#define TRACE_LOG(...) do{}while(0)` 替代运行时 `if(verbose)` 判断。Release 构建时 trace 代码完全被编译器消除，零性能开销；Debug 构建时 `cmake -DCEMU_TRACE=ON` 恢复完整日志。这是 C/C++ 项目中条件编译的经典模式。
+42. **模拟器性能计数器提供反馈闭环**：`instret`（指令退休数）+ `std::chrono::steady_clock` 墙钟计时 + IPS 吞吐率，不依赖外部 perf 工具即可评估模拟器性能。这是任何模拟器/仿真器开发的基础设施。
+43. **纯汇编 Shell 的行编辑模式**：U 模式用户程序用 buffer + 指针实现逐字符读取、回显、退格（`\b \b` 序列擦除屏幕字符）、换行提交。这是没有 libc/readline 的裸机行编辑标准做法。
+44. **trap 静默模式是日志设计的进阶技巧**：Shell 每个按键触发一次 `sys_read(0)` ecall，若每次打印完整的 TRAP 日志（4 行），用户看到的 Shell 界面将被日志淹没。`trap_silent` 全局标志让内核在 Shell 运行期间静默处理 syscall，只保留错误输出。这是内核日志分层控制（热路径抑制）的工程实践。

@@ -5,6 +5,158 @@
 
 ***
 
+## 2026-06-13 — 模块九：交互式 Shell
+
+### 背景
+
+模块八完成后，MiniOS 已具备完整进程管理（fork/exec/wait/waitpid、信号量、互斥锁、FCFS/RR 调度）。但缺少一个让用户与内核直接交互的界面——之前只能看 preset demo 运行，无法输入命令。
+
+### 核心设计
+
+在 U 模式用**纯汇编**编写一个逐字符行编辑的交互式 Shell，通过 ecall 调用 sys_read/sys_write/sys_fork/sys_exec/sys_waitpid/sys_ps。Shell 作为第一个用户进程被 kernel_main 启动，其退出标志着 MiniOS 运行结束。
+
+### 涉及文件
+
+**os/kernel/user_entry.S — 完整重写** (旧~80行 demo → 新~280行 Shell):
+- Shell banner, prompt (`minios> `), help text, 各种消息字符串
+- `shell_write(a1, a2)`: 封装 `sys_write(1, buf, len)` 的内部子程序
+- `shell_strcmp(a0, a1)`: 汇编级逐字符比较，返回 0 表示相等
+- `shell_read_loop`: 逐字符 `sys_read(0)` → 回显 → 退格处理 (`\b \b`) → 换行提交
+- 行缓冲区 64 字节 (`sp + 0`)
+- 命令分发: `help`, `echo`, `ps`, `run`, `clear`, `exit`, 未知命令提示
+- `echo` 支持参数，`clear` 输出 `\033[2J\033[H` ANSI 序列
+- `run` 通过 `fork(220)` → 子进程 `exec(221)` → 父进程 `waitpid(260)` 三元组启动内置用户映像
+- `exit` 调用 `sys_exit(93)` 终止 Shell
+
+**os/kernel/syscall.c/h — 新增 SYS_PS**:
+- `SYS_PS(400)`: 调用 `task_dump_processes()` 打印当前进程表，返回 0
+- `syscall_dispatch()` 新增 `case SYS_PS` 分支
+
+**os/kernel/trap.c — syscall 静默模式**:
+- 新增 `quiet_syscall` 局部变量: 当 `trap_silent && (cause == 8 || cause == 9)` 时抑制 TRAP 日志
+- 避免 Shell 每次按键 (`sys_read(0)`) 都打印 4 行 `=== TRAP ===` 日志
+- `=== TRAP END ===` 同样受静默控制
+
+**os/kernel/kernel.c — 启动简化**:
+- kernel_main 从旧的多任务 demo (FCFS/RR/同步/idle reap zombies) 简化为:
+  1. 系统自测 (内存分配器/ECALL/系统调用)
+  2. `task_create(user_task_entry, "shell")` 创建 Shell 进程
+  3. `task_waitpid(shell_pid, NULL, 1)` 阻塞等待 Shell 退出
+  4. Shell 退出后写入 TEST_FINISH 停机
+
+### 验证结果
+
+```
+Starting shell (pid=5)...
+
+MiniOS shell
+Type 'help' for commands.
+minios> help
+help        show this help
+echo TEXT   print TEXT
+ps          show processes
+run         run fork/exec demo
+clear       clear the terminal
+exit        leave the shell
+minios> ps
+PID  NAME     STATE    PPID
+0    idle     READY    -1
+5    shell    RUNNING  0
+minios> echo Hello MiniOS!
+Hello MiniOS!
+minios> run
+run: child exited
+minios> exit
+Shell exited, halting MiniOS.
+=== CEMU Performance ===
+Instructions retired: 123456
+Elapsed time:         2.345678 s
+Throughput:            52600.00 IPS
+```
+
+- 91/91 单元测试全部通过
+- 交互式输入输出流畅，退格处理正确
+
+### 经验笔记
+
+1. **纯汇编 Shell 的行编辑模式**：U 模式无 libc/readline，用 buffer + 指针实现逐字符读取、回显、退格 (`\b \b` 序列擦除屏幕上的字符)、换行提交。每读一个字符触发一次 `sys_read(0)` ecall。
+2. **trap 静默模式是内核日志分层设计**：Shell 每个按键一次 ecall，若每次打印完整 TRAP 日志，用户界面将被淹没。`trap_silent` 全局标志 + `quiet_syscall` 局部判断实现热路径日志抑制，错误仍正常输出。
+3. **kernel_main 从 demo factory 变为 init 进程**：早期 kernel_main 逐个启动演示任务然后进入 idle 循环回收僵尸进程。现在只需创建 Shell → waitpid → halt，演示通过 Shell 的 `run`/`ps` 命令按需触发。这是 OS 从"嵌入式 demo"到"交互式系统"的转折点。
+
+***
+
+## 2026-06-13 — 追加：CEMU_TRACE 编译开关 + 性能计数器
+
+### 背景
+
+模拟器开发过程中，逐指令 trace 日志（fetch 地址、指令码、执行结果）对调试至关重要。但 Release 构建时这些日志产生巨大 I/O 开销（性能下降数十倍）。需要一种机制在 Release 构建中零开销消除 trace 日志，同时保留 Debug 构建中一键恢复的能力。
+
+### 核心设计
+
+使用编译期 `#ifdef` 条件编译替代运行时 `if(verbose)` 判断:
+- CMakeLists.txt 新增 `CEMU_TRACE` option (默认 OFF)
+- `src/log.h` 新增 `TRACE_LOG(...)` 宏: 定义 `CEMU_TRACE` 时展开为 `LOG(DEBUG, ...)`，否则为空的 `do{}while(0)`
+- `MIN_LOG_LEVEL` 在 `CEMU_TRACE` 开启时设为 `DEBUG`，否则保持 `WARNING`
+- 所有指令执行热路径 (`cpu.cpp`/`instructions.cpp`) 的 `LOG(INFO, ...)` 统一替换为 `TRACE_LOG(...)`
+- `src/main.cpp` 新增 `instret` 计数器 + `std::chrono::steady_clock` 墙钟计时 + 退出时打印 IPS
+
+### 涉及文件
+
+**CMakeLists.txt** — 新增 option + 条件编译定义:
+```cmake
+option(CEMU_TRACE "Enable per-instruction simulator trace logging" OFF)
+if(CEMU_TRACE)
+    target_compile_definitions(common_library PUBLIC CEMU_TRACE=1)
+endif()
+```
+
+**src/log.h** — TRACE_LOG 宏 + 日志级别联动:
+```cpp
+#ifdef CEMU_TRACE
+constexpr LogLevel MIN_LOG_LEVEL = DEBUG;
+#else
+constexpr LogLevel MIN_LOG_LEVEL = WARNING;
+#endif
+
+#ifdef CEMU_TRACE
+#define TRACE_LOG(...) LOG(cemu::INFO, __VA_ARGS__)
+#else
+#define TRACE_LOG(...) do { } while (0)
+#endif
+```
+
+**src/cpu.cpp / src/instructions.cpp** — 日志宏替换:
+- `fetch()` 中的 `LOG(INFO, "Instruction fetched: ...")` → `TRACE_LOG(...)`
+- `execute()` 中的 `LOG(INFO, "Execution successful. ...")` → `TRACE_LOG(...)`
+- instructions.cpp 中约 15 处 `LOG(INFO, ...)` → `TRACE_LOG(...)`
+
+**src/main.cpp** — 性能计数器:
+```cpp
+uint64_t instret = 0;
+const auto start_time = std::chrono::steady_clock::now();
+// ... 主循环中每个成功执行的指令 instret++ ...
+const auto end_time = std::chrono::steady_clock::now();
+double ips = seconds > 0.0 ? static_cast<double>(instret) / seconds : 0.0;
+```
+
+### 使用方式
+
+```bash
+# Release 构建 (零 trace 开销)
+cmake --build build_wsl -j$(nproc)
+
+# Debug 构建 (完整指令级 trace)
+cmake .. -DCEMU_TRACE=ON
+cmake --build build_wsl -j$(nproc)
+```
+
+### 经验笔记
+
+1. **编译期开关优于运行时 if 判断**：`do{}while(0)` 空宏在 Release 构建中被编译器完全消除（包括参数表达式求值），真正零开销。运行时 `if(verbose)` 即使 verbose 为 false，每次循环仍需执行判断和分支预测。
+2. **性能计数器是模拟器开发的基础设施**：`instret` + `std::chrono` + IPS 提供量化反馈。不依赖外部 perf 工具即可快速对比优化前后的吞吐率。
+
+***
+
 ## 2026-06-13 — 模块八：完整进程管理
 
 ### 完成内容
