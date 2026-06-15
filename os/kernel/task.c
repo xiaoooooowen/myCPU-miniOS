@@ -3,6 +3,7 @@
 #include "printk.h"
 #include "user.h"
 #include "timer.h"
+#include "minifs.h"
 #include "../include/csr.h"
 
 #ifndef MINIOS_BOOT_DIAGNOSTICS
@@ -29,6 +30,16 @@ static void copy_name(char *dst, const char *src) {
         }
     }
     dst[i] = '\0';
+}
+
+static int name_equal(const char *a, const char *b) {
+    int i = 0;
+    while (a[i] == b[i]) {
+        if (a[i] == '\0')
+            return 1;
+        i++;
+    }
+    return 0;
 }
 
 static const char *state_name(int state) {
@@ -165,6 +176,7 @@ void task_init(void) {
         tasks[i].ppid = -1;
         tasks[i].stack = NULL;
         tasks[i].has_user_space = 0;
+        tasks[i].cwd_inode = MINIFS_ROOT_INODE;
         tasks[i].name[0] = '\0';
     }
 
@@ -184,6 +196,7 @@ void task_init(void) {
     tasks[0].ready_order = tasks[0].created_order;
     tasks[0].trap_ctx.satp = csr_read(satp);
     tasks[0].trap_ctx.status = trap_status_read() | SSTATUS_SPP;
+    tasks[0].cwd_inode = MINIFS_ROOT_INODE;
     copy_name(tasks[0].name, "idle");
     current = &tasks[0];
 
@@ -228,6 +241,7 @@ int task_create(void (*entry)(void), const char *name) {
     task->ready_order = task->created_order;
     task->runtime_ticks = 0;
     task->context_switches = 0;
+    task->cwd_inode = current != NULL ? current->cwd_inode : MINIFS_ROOT_INODE;
     task->has_user_space = 0;
     copy_name(task->name, name);
 
@@ -284,6 +298,7 @@ int task_fork_from_trap(uint64_t *tf, uint64_t child_epc,
     child->ready_order = child->created_order;
     child->runtime_ticks = 0;
     child->context_switches = 0;
+    child->cwd_inode = current->cwd_inode;
     child->has_user_space = 1;
     child->address_space = *address_space;
     copy_name(child->name, "fork-child");
@@ -293,9 +308,11 @@ int task_fork_from_trap(uint64_t *tf, uint64_t child_epc,
     child->trap_ctx.status = trap_status_read() & ~SSTATUS_SPP;
     child->trap_ctx.satp = address_space->satp;
     task_count++;
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("fork: parent=%d child=%d (independent satp=%lx)\n",
            current->pid, child->pid, child->trap_ctx.satp);
     task_dump_tree();
+#endif
     return child->pid;
 }
 
@@ -366,6 +383,7 @@ void task_exit(int exit_code) {
         return;
     current->exit_code = exit_code;
     current->state = TASK_ZOMBIE;
+    minifs_close_all(current->pid);
 
     struct task *parent = find_pid(current->ppid);
     if (parent != NULL && parent->state == TASK_BLOCKED &&
@@ -379,6 +397,31 @@ void task_exit(int exit_code) {
         if (tasks[i].state != TASK_UNUSED && tasks[i].ppid == current->pid)
             tasks[i].ppid = 0;
     }
+}
+
+int task_kill(int pid, int exit_code) {
+    struct task *target = find_pid(pid);
+    if (target == NULL || target->pid == 0 || target == current ||
+        target->state == TASK_ZOMBIE || target->state == TASK_UNUSED ||
+        name_equal(target->name, "shell"))
+        return -1;
+
+    target->exit_code = exit_code;
+    target->state = TASK_ZOMBIE;
+    target->wait_channel = NULL;
+    minifs_close_all(target->pid);
+
+    struct task *parent = find_pid(target->ppid);
+    if (parent != NULL && parent->state == TASK_BLOCKED &&
+        (parent->wait_target < 0 || parent->wait_target == target->pid)) {
+        parent->state = TASK_READY;
+        parent->wait_channel = NULL;
+        parent->ready_order = ++order_counter;
+    }
+    for (int i = 1; i < MAX_TASKS; i++)
+        if (tasks[i].state != TASK_UNUSED && tasks[i].ppid == target->pid)
+            tasks[i].ppid = 0;
+    return 0;
 }
 
 int task_waitpid(int pid, int *status, int nohang) {
@@ -400,12 +443,15 @@ int task_waitpid(int pid, int *status, int nohang) {
         int child_pid = child->pid;
         if (status != NULL)
             *status = child->exit_code;
+#if MINIOS_BOOT_DIAGNOSTICS
         printk("waitpid: parent=%d reaped child=%d exit=%d\n",
                current->pid, child_pid, child->exit_code);
+#endif
         if (child->stack != NULL)
             kfree(child->stack);
         if (child->has_user_space)
             user_space_destroy(&child->address_space);
+        minifs_close_all(child_pid);
 
         child->stack = NULL;
         child->has_user_space = 0;
@@ -439,6 +485,20 @@ int task_current_state(void) {
 
 int task_current_pid(void) {
     return current == NULL ? -1 : current->pid;
+}
+
+uint32_t task_current_cwd(void) {
+    return current == NULL ? MINIFS_ROOT_INODE : current->cwd_inode;
+}
+
+void task_set_current_cwd(uint32_t inode) {
+    if (current != NULL)
+        current->cwd_inode = inode;
+}
+
+void task_set_current_name(const char *name) {
+    if (current != NULL)
+        copy_name(current->name, name);
 }
 
 uint64_t task_current_kernel_stack_top(void) {
@@ -542,10 +602,12 @@ void task_dump_processes(void) {
                (long)tasks[i].runtime_ticks,
                (long)tasks[i].context_switches, tasks[i].name);
     }
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("[%s] context switch max=%ld ticks, limit=%ld ticks (1ms), samples=%ld\n",
            max_switch_ticks < TIMER_TICKS_PER_MS ? "PASS" : "FAIL",
            (long)max_switch_ticks, (long)TIMER_TICKS_PER_MS,
            (long)switch_samples);
+#endif
 }
 
 static void dump_tree_node(int pid, int depth) {

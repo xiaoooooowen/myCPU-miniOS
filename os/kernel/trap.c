@@ -119,16 +119,6 @@ void trap_handler(uint64_t *tf) {
         trap_epc_write(epc + 4);
     }
 
-    /*
-     * 若因 U 模式 ecall 退出而触发重调度，需恢复 SPP=1，
-     * 确保下一个任务运行在 Supervisor 模式。
-     * S 模式 ecall 退出时 SPP 已是 1，无需处理。
-     */
-    if (rescheduled && cause == 8) {
-        uint64_t status = csr_read(sstatus);
-        status |= SSTATUS_SPP;
-        csr_write(sstatus, status);
-    }
     task_prepare_trap_return();
 }
 

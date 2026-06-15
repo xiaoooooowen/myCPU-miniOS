@@ -5,6 +5,49 @@
 
 ***
 
+## 2026-06-15 — 持久化 MiniFS、Shell 文件命令与 kill
+
+### 目标与结果
+
+把 MiniOS 从“内存文件演示”推进到可跨重启保存数据的系统：CEMU 新增 1 MiB 宿主磁盘，内核新增 MiniFS，并在 U 模式 Shell 中实现 `ls/cd/pwd/cat/run [&]/kill`。最终 95/95 模拟器单元测试通过，`fstest`、`forktest`、后台 `spin` 与跨重启读取均通过。
+
+### 核心实现
+
+- CEMU 块设备 MMIO 基址 `0x10001000`，512 B 扇区、2048 扇区；命令寄存器同步执行读写，写操作立即刷新镜像
+- `cemu kernel.bin` 默认使用同目录 `disk.img`，`--disk PATH` 可指定镜像；新镜像自动创建，错误尺寸镜像拒绝挂载且保持原样
+- MiniFS 固定布局：超级块、inode 位图、数据块位图、64 个 inode、数据区；普通文件最大 4096 B
+- 首次格式化创建 `/bin`、`/tests`、`/tmp`、`/README` 和三个可执行入口
+- PCB 新增 cwd inode，fork 继承 cwd；MiniFS fd 表按 PID 隔离，close 只释放描述符
+- 新增系统调用 401-405：目录列出、切换目录、获取 cwd、按路径执行、终止进程
+- Shell 在每次提示符前用 `waitpid(-1, WNOHANG)` 回收后台任务，避免僵尸进程
+
+### 内置演示程序
+
+| 程序 | 行为 |
+|------|------|
+| `spin` | 持续计算，用于演示 `run spin &`、`ps` 和 `kill PID` |
+| `fstest` | 写入并重新打开 `/tmp/fstest.txt`，比较内容后输出 PASS/FAIL |
+| `forktest` | fork 子进程、exec 独立映像、waitpid 检查退出码 42 |
+
+### 关键问题与修复
+
+子进程退出切回 Shell 后曾触发 LoadAccessFault。根因是 trap handler 在 U-mode ecall 引发重调度后无条件设置 `SPP=1`，覆盖了目标 Shell 保存的用户态 `sstatus`。Shell 因而以 S-mode 返回，后续定时器中断直接使用用户栈运行内核 trap 代码。修复方式是完全保留目标任务的 `sstatus`，不在 trap 尾部猜测下一任务的特权级。
+
+阻塞式 `waitpid` 首次返回内部状态 `TASK_WAIT_BLOCKED`，任务被唤醒后调用点寄存器仍保留该返回值。Shell 与 `forktest` 因此在值为 `-2` 时重新发起 waitpid，直到真正回收 zombie 并取得退出码。
+
+### 验证
+
+- `ls /tests`、`cd /tests`、`pwd`、`cat /README`
+- `run fstest` 与 `run forktest` 均 PASS
+- `run spin &` → `ps` → `kill PID` → `ps`
+- 重启后 `cat /tmp/fstest.txt` 内容仍存在
+- PID 0、Shell PID 和无效 PID 均不可终止
+- `BOOT_COLOR=0` 输出不含 ANSI 转义序列
+- `BOOT_DIAGNOSTICS=1` 原内存、trap、syscall、RAMFS、FCFS 回归全部通过
+- CEMU Google Test：95/95 通过
+
+***
+
 ## 2026-06-15 — 启动美化与诊断开关
 
 ### 背景

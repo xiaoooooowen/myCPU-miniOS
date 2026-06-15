@@ -164,4 +164,11 @@ constexpr uint8_t MASK_UART_LSR_TX = 1 << 5;
 constexpr uint64_t TEST_FINISH = 0x100000;
 constexpr uint64_t TEST_FINISH_SIZE = 0x100;
 constexpr uint64_t TEST_FINISH_END = TEST_FINISH + TEST_FINISH_SIZE - 1;
+
+// Synchronous block device backed by a 1 MiB host image.
+constexpr uint64_t BLOCK_BASE = 0x10001000;
+constexpr uint64_t BLOCK_SIZE = 0x300;
+constexpr uint64_t BLOCK_END = BLOCK_BASE + BLOCK_SIZE - 1;
+constexpr uint64_t BLOCK_SECTOR_SIZE = 512;
+constexpr uint64_t BLOCK_SECTOR_COUNT = 2048;
 }

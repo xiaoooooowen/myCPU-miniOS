@@ -24,6 +24,11 @@
 #define SYS_OPEN    56    /* 创建 RAMFS 文件，返回 fd */
 #define SYS_CLOSE   57    /* 关闭 RAMFS 文件 */
 #define SYS_PS      400   /* 输出当前进程表 */
+#define SYS_LIST    401
+#define SYS_CHDIR   402
+#define SYS_GETCWD  403
+#define SYS_EXEC_PATH 404
+#define SYS_KILL    405
 
 /*
  * syscall_dispatch() — 系统调用分派函数

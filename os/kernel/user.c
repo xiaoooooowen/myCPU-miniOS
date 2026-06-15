@@ -13,8 +13,10 @@
 
 extern char user_entry[];
 extern char user_entry_end[];
-extern char user_worker[];
-extern char user_worker_end[];
+extern char user_spin[], user_spin_end[];
+extern char user_fstest[], user_fstest_end[];
+extern char user_forktest[], user_forktest_end[];
+extern char user_fork_child[], user_fork_child_end[];
 
 static void zero_page(void *page) {
     uint64_t *words = (uint64_t *)page;
@@ -36,8 +38,23 @@ static int image_bounds(int image_id, const char **start, const char **end) {
         return 0;
     }
     if (image_id == 1) {
-        *start = user_worker;
-        *end = user_worker_end;
+        *start = user_spin;
+        *end = user_spin_end;
+        return 0;
+    }
+    if (image_id == 2) {
+        *start = user_fstest;
+        *end = user_fstest_end;
+        return 0;
+    }
+    if (image_id == 3) {
+        *start = user_forktest;
+        *end = user_forktest_end;
+        return 0;
+    }
+    if (image_id == 4) {
+        *start = user_fork_child;
+        *end = user_fork_child_end;
         return 0;
     }
     return -1;

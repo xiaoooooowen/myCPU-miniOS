@@ -30,6 +30,7 @@ cmake-variants.yaml
 *.so
 *.dylib
 *.bin
+*.img
 
 # ============ 编译数据库（语言服务跳转用） ============
 compile_commands.json

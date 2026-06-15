@@ -30,6 +30,8 @@ set(COMMON_SOURCES
         src/clint.h
         src/uart.cpp
         src/uart.h
+        src/block_device.cpp
+        src/block_device.h
 )
 
 add_library(common_library ${COMMON_SOURCES})

@@ -7,6 +7,7 @@
 #include "trap.h"
 #include "user.h"
 #include "ramfs.h"
+#include "minifs.h"
 #include "../include/csr.h"
 
 #ifndef MINIOS_BOOT_DIAGNOSTICS
@@ -292,8 +293,14 @@ void kernel_main(void) {
     boot_status(kernel_l2 != NULL, "Virtual memory     ",
                 "Sv39, 128 MiB mapped");
 
-    ramfs_init();
-    boot_status(1, "RAMFS              ", "8 files, 4096 bytes each");
+    int fs_ready = minifs_init() == 0;
+    boot_status(fs_ready, "MiniFS             ", "1 MiB persistent disk");
+    if (!fs_ready) {
+        printk("Invalid disk image; refusing to overwrite it.\n");
+        *(volatile uint32_t *)0x100000 = 0x5555;
+        while (1)
+            ;
+    }
 
 #if MINIOS_BOOT_DIAGNOSTICS
     run_boot_diagnostics();

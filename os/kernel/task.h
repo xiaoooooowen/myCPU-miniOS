@@ -84,6 +84,7 @@ struct task {
     uint64_t       ready_order;
     uint64_t       runtime_ticks;
     uint64_t       context_switches;
+    uint32_t       cwd_inode;
     int            has_user_space;
     struct task_address_space address_space;
     char           name[TASK_NAME_LEN];
@@ -121,6 +122,10 @@ int  task_waitpid(int pid, int *status, int nohang);
 /* 获取当前任务状态（由 trap_handler 检查是否需要重调度） */
 int  task_current_state(void);
 int  task_current_pid(void);
+uint32_t task_current_cwd(void);
+void task_set_current_cwd(uint32_t inode);
+void task_set_current_name(const char *name);
+int task_kill(int pid, int exit_code);
 uint64_t task_current_kernel_stack_top(void);
 void task_prepare_trap_return(void);
 void task_block(const void *channel);

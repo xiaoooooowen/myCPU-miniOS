@@ -4,15 +4,20 @@
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <filesystem>
 #include "cpu.h"
 #include "log.h"
 #include "exception.h"
 #include "param.h"
 
 int main(int argc, char* argv[]) {
-  if (argc != 2) {
-    LOG(cemu::ERROR, "Usage:\n- ./program_name <filename>");
-    return 0;
+  if (argc != 2 && argc != 4) {
+    LOG(cemu::ERROR, "Usage: cemu <kernel.bin> [--disk <disk.img>]");
+    return 1;
+  }
+  if (argc == 4 && std::string(argv[2]) != "--disk") {
+    LOG(cemu::ERROR, "Usage: cemu <kernel.bin> [--disk <disk.img>]");
+    return 1;
   }
 
   std::ifstream file(argv[1], std::ios::binary);
@@ -22,7 +27,11 @@ int main(int argc, char* argv[]) {
   }
 
   std::vector<uint8_t> code(std::istreambuf_iterator<char>(file), {});
-  cemu::Cpu cpu(code); // 假设Cpu类的构造函数接受指令代码的vector
+  std::filesystem::path disk_path =
+      argc == 4 ? std::filesystem::path(argv[3])
+                : std::filesystem::path(argv[1]).parent_path() / "disk.img";
+  try {
+    cemu::Cpu cpu(code, disk_path.string());
 
   // 启动 UART 标准输入监听，用于 OS 运行时读取终端输入
   cpu.bus.start_stdin();
@@ -90,5 +99,9 @@ int main(int argc, char* argv[]) {
   cpu.dump_registers(); // 打印寄存器状态
   cpu.dump_pc();        // 打印PC寄存器状态
 
-  return 0;
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "Cannot open disk image: " << error.what() << '\n';
+    return 1;
+  }
 }

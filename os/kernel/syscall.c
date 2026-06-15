@@ -2,19 +2,23 @@
 #include "uart.h"
 #include "printk.h"
 #include "task.h"
-#include "ramfs.h"
+#include "minifs.h"
 #include "user.h"
 #include "../include/csr.h"
 #include <stddef.h>
+
+#ifndef MINIOS_BOOT_DIAGNOSTICS
+#define MINIOS_BOOT_DIAGNOSTICS 0
+#endif
 
 /* TEST_FINISH 设备地址：向此地址写入任意值通知模拟器停止运行 */
 #define TEST_FINISH 0x100000
 
 /*
- * sys_write() — 向控制台 (fd=1) 或 RAMFS 文件 (fd>=2) 输出
+ * sys_write() — 向控制台 (fd=1) 或 MiniFS 文件 (fd>=2) 输出
  *
  * 参数：
- *   fd   文件描述符（1=stdout，>=2=RAMFS 文件）
+ *   fd   文件描述符（1=stdout，>=2=MiniFS 文件）
  *   buf  指向字符串缓冲区
  *   len  要输出的字节数
  *
@@ -35,15 +39,16 @@ static uint64_t sys_write(uint64_t fd, uint64_t buf, uint64_t len) {
         return written;
     }
 
-    /* fd>=2: RAMFS 文件写入 */
-    return (uint64_t)ramfs_write((int)fd, (const void *)buf, len);
+    /* fd>=2: MiniFS 文件写入 */
+    return (uint64_t)minifs_write(task_current_pid(), (int)fd,
+                                  (const void *)buf, len);
 }
 
 /*
- * sys_read() — 从控制台 (fd=0) 或 RAMFS 文件 (fd>=2) 读取
+ * sys_read() — 从控制台 (fd=0) 或 MiniFS 文件 (fd>=2) 读取
  *
  * 参数：
- *   fd   文件描述符（0=stdin，>=2=RAMFS 文件）
+ *   fd   文件描述符（0=stdin，>=2=MiniFS 文件）
  *   buf  字符缓冲区
  *   len  最大读取字节数
  *
@@ -64,8 +69,9 @@ static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
         return len;
     }
 
-    /* fd>=2: RAMFS 文件读取 */
-    return (uint64_t)ramfs_read((int)fd, (void *)buf, len);
+    /* fd>=2: MiniFS 文件读取 */
+    return (uint64_t)minifs_read(task_current_pid(), (int)fd,
+                                 (void *)buf, len);
 }
 
 /*
@@ -79,7 +85,9 @@ static uint64_t sys_read(uint64_t fd, uint64_t buf, uint64_t len) {
  * 否则（无任务上下文），直接触发 TEST_FINISH 停机。
  */
 static void sys_exit(uint64_t code) {
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("\n--- Task Exit (code=%ld) ---\n", (long)code);
+#endif
 
     /* 尝试将当前任务标记为 ZOMBIE */
     task_exit((int)code);
@@ -133,7 +141,7 @@ static int sys_exec(uint64_t *tf, uint64_t image_id) {
 }
 
 /*
- * sys_open() — 创建 RAMFS 文件
+ * sys_open() — 打开或创建 MiniFS 文件
  *
  * 参数：
  *   name  文件名指针（用户态字符串）
@@ -144,11 +152,12 @@ static uint64_t sys_open(uint64_t name, uint64_t flags) {
     (void)flags;
     if (name == 0)
         return (uint64_t)-1;
-    return (uint64_t)ramfs_create((const char *)name);
+    return (uint64_t)minifs_open(task_current_pid(), task_current_cwd(),
+                                 (const char *)name, (int)flags);
 }
 
 /*
- * sys_close() — 关闭 RAMFS 文件
+ * sys_close() — 关闭 MiniFS 文件
  *
  * 参数：
  *   fd   文件描述符
@@ -158,12 +167,45 @@ static uint64_t sys_open(uint64_t name, uint64_t flags) {
 static uint64_t sys_close(uint64_t fd) {
     if ((int)fd < 2)
         return (uint64_t)-1;
-    return (uint64_t)ramfs_close((int)fd);
+    return (uint64_t)minifs_close(task_current_pid(), (int)fd);
 }
 
 static uint64_t sys_ps(void) {
     task_dump_processes();
     return 0;
+}
+
+static uint64_t sys_list(uint64_t path) {
+    return (uint64_t)minifs_list(task_current_cwd(),
+                                 path == 0 ? NULL : (const char *)path);
+}
+
+static uint64_t sys_chdir(uint64_t path) {
+    uint32_t cwd;
+    if (path == 0 ||
+        minifs_chdir(task_current_cwd(), (const char *)path, &cwd) < 0)
+        return (uint64_t)-1;
+    task_set_current_cwd(cwd);
+    return 0;
+}
+
+static uint64_t sys_getcwd(uint64_t buffer, uint64_t length) {
+    return (uint64_t)minifs_getcwd(task_current_cwd(), (char *)buffer,
+                                   length);
+}
+
+static int sys_exec_path(uint64_t *tf, uint64_t path) {
+    if (path == 0)
+        return -1;
+    int image = minifs_exec_image(task_current_cwd(), (const char *)path);
+    if (image < 0)
+        return -1;
+    task_set_current_name((const char *)path);
+    return user_exec(tf, image);
+}
+
+static uint64_t sys_kill(uint64_t pid) {
+    return (uint64_t)task_kill((int)pid, 137);
 }
 
 /*
@@ -213,6 +255,23 @@ int syscall_dispatch(uint64_t *tf) {
             break;
         case SYS_PS:
             tf[10] = sys_ps();
+            break;
+        case SYS_LIST:
+            tf[10] = sys_list(arg0);
+            break;
+        case SYS_CHDIR:
+            tf[10] = sys_chdir(arg0);
+            break;
+        case SYS_GETCWD:
+            tf[10] = sys_getcwd(arg0, arg1);
+            break;
+        case SYS_EXEC_PATH:
+            if (sys_exec_path(tf, arg0) == 0)
+                return 1;
+            tf[10] = (uint64_t)-1;
+            break;
+        case SYS_KILL:
+            tf[10] = sys_kill(arg0);
             break;
         default:
             printk("Unknown syscall number: %ld\n", (long)nr);

@@ -2,11 +2,13 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 #include <cstdint>
 #include "dram.h"
 #include "clint.h"
 #include "plic.h"
+#include "block_device.h"
 
 namespace cemu {
 
@@ -14,7 +16,7 @@ class Uart;
 
 class Bus {
 public:
-  Bus(const std::vector<uint8_t>& code);
+  Bus(const std::vector<uint8_t>& code, const std::string& disk_path = "");
   ~Bus();
 
   Bus(const Bus&) = delete;
@@ -34,6 +36,7 @@ public:
   std::unique_ptr<Uart> uart;
   Clint clint;
   Plic plic;
+  BlockDevice block;
 
 private:
   bool halted = false;

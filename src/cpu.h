@@ -33,9 +33,9 @@ public:
   // MMU：Sv39 虚拟内存地址翻译
   Mmu mmu;
 
-  Cpu(const std::vector<uint8_t>& code)
+  Cpu(const std::vector<uint8_t>& code, const std::string& disk_path = "")
       : pc(DRAM_BASE),
-        bus(code),
+        bus(code, disk_path),
         csr(),  // 初始化 Csr
         mmu(csr, bus.dram)  // 初始化 MMU
   {
@@ -90,4 +90,3 @@ private:
 
 }
 //5.18学习至此
-

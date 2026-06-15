@@ -1,7 +1,7 @@
 # MiniOS / myCPU 项目当前状态
 
 > 冻结时间：2026-06-15
-> 冻结版本：阶段 0.5 至阶段 10 + 模块一至模块九全部完成 + 启动美化
+> 冻结版本：阶段 0.5 至阶段 10 + 模块一至模块九 + 持久化 MiniFS 与进程命令
 
 ## 一、环境信息
 
@@ -30,6 +30,12 @@ cmake --build build_wsl -j$(nproc)
 
 # MiniOS 内核
 cd os && make
+
+# 启动 MiniOS（默认在 kernel.bin 同目录创建/挂载 disk.img）
+./build_wsl/cemu os/build/kernel.bin
+
+# 指定磁盘镜像
+./build_wsl/cemu os/build/kernel.bin --disk /tmp/minios.disk
 ```
 
 ### 构建结果
@@ -39,7 +45,7 @@ cd os && make
 | cemu (模拟器) | ✅ 通过 | 0 |
 | unit_test (测试) | ✅ 通过 | 0 |
 | common_library | ✅ 通过 | 0 |
-| MiniOS (kernel.bin) | ✅ 通过 | 0 |
+| MiniOS (kernel.bin) | ✅ 通过 | 1（链接器提示 RWX LOAD 段） |
 
 ### 产物
 
@@ -48,76 +54,49 @@ cd os && make
 - `build_wsl/libcommon_library.a` — 公共库
 - `os/build/kernel.bin` — MiniOS 裸机二进制
 - `os/build/kernel.elf` — MiniOS ELF 文件（含调试符号）
+- `os/build/disk.img` — 默认 1 MiB 持久化磁盘镜像（首次运行自动创建）
 
-## 三、测试结果（2026-06-04 运行）
+## 三、测试结果（2026-06-15 运行）
 
 ### 测试总览
 
 | 类别 | 总数 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| RV 指令测试 (RVTests) | 32 | 32 | 0 | 0 |
+| RV 指令测试 (RVTests) | 39 | 39 | 0 | 0 |
 | CSR 综合测试 (CSRSTest) | 1 | 1 | 0 | 0 |
 | DRAM 测试 (DramTest) | 4 | 4 | 0 | 0 |
-| Bus 测试 (BusTest) | 4 | 4 | 0 | 0 |
+| Bus 测试 (BusTest) | 14 | 14 | 0 | 0 |
 | CPU 测试 (CpuTest) | 4 | 4 | 0 | 0 |
 | CSR 单元测试 (CsrTest) | 4 | 4 | 0 | 0 |
 | 异常测试 (ExceptionTest) | 4 | 4 | 0 | 0 |
-| PLIC 测试 (PlicTest) | 13 | 13 | 0 | 0 |
-| CLINT 测试 (ClintTest) | 13 | 13 | 0 | 0 |
+| PLIC 测试 (PlicTest) | 3 | 3 | 0 | 0 |
+| CLINT 测试 (ClintTest) | 4 | 4 | 0 | 0 |
 | UART 测试 (UartTest) | 5 | 5 | 0 | 0 |
 | MMU 测试 (MmuTest) | 13 | 13 | 0 | 0 |
-| 自定义指令测试 | 2 | 2 | 0 | 0 |
-| **合计** | **91** | **91** | **0** | **0** |
+| **合计** | **95** | **95** | **0** | **0** |
 
 ### MiniOS 运行验证
 
-```bash
-timeout 6 ./build_wsl/cemu os/build/kernel.bin > /tmp/cemu_out.log 2>&1
-python3 -c "
-import re
-with open('/tmp/cemu_out.log') as f:
-    chars = [chr(int(m.group(1),16)) for line in f if (m := re.search(r'storing value ([0-9a-f]+) at UART', line))]
-print(''.join(chars))
-"
+**默认输出**：
 ```
+ MiniOS | RV64I | S-mode | Sv39
 
-**输出**（阶段 10 Sv39 分页模式 + 模块九 Shell）：
-```
-MiniOS booting...
-Hello from kernel!
---- Kernel Log Demo ---
-String: hello world
-Decimal: -42
-Hex: 0xdeadbeef
-Long hex: 0x80000000
-Char: Z
-Percent: 100%
---- Phase 5: Memory Allocator Test ---
-Free pages: 32701
---- Phase 10: Virtual Memory (Sv39) ---
-Sv39 page table setup complete (identity map 128MB DRAM)
-Alloc p1: 0x80006000
-Alloc p2: 0x80007000
-Alloc p3: 0x80008000
-Free pages after alloc: 32695
-p1 data: ABCDEFGHIJKLMNOP
-Free pages after kfree(p2): 32696
-Alloc p4: 0x80007000 (should == p2: 0x80007000)
-Free pages after cleanup: 32698
-Memory allocator test passed!
---- Phase 3: ECALL Trap Test ---
-Triggering ECALL to test trap handler...
-Trap round-trip successful!
---- Phase 8: System Call Test ---
-System call test passed!
-Starting shell (pid=5)...
-MiniOS shell
+ [ OK ] Physical memory    32683 pages free
+ [ OK ] Virtual memory     Sv39, 128 MiB mapped
+ [ OK ] MiniFS             1 MiB persistent disk
+ [ OK ] Scheduler          RR, 10 ms quantum
+ [ OK ] User shell         pid 1
+
+Welcome to MiniOS.
 Type 'help' for commands.
 minios> _
 ```
 
 - Shell 作为 U 模式进程运行，通过 `sys_read(0)` 逐字符读取、回显、退格支持、换行提交
-- 命令：`help` 显示帮助、`echo TEXT` 回显文本、`ps` 打印进程表、`run` fork+exec 子进程、`clear` 清屏、`exit` 退出 Shell
+- 命令：`help`、`ls [path]`、`cd path`、`pwd`、`cat file`、`run program [&]`、`ps`、`kill PID`、`echo TEXT`、`clear`、`exit`
+- 首次格式化创建 `/bin`、`/tests`、`/tmp`、`/README`，并预置 `/tests/spin`、`fstest`、`forktest`
+- `fstest` 已验证 `/tmp/fstest.txt` 跨模拟器重启保留；`forktest` 已验证 fork/exec/waitpid 与退出码
+- `kill` 使用退出码 137，拒绝 PID 0、当前 Shell、不存在和已退出任务；Shell 在提示符前非阻塞回收后台任务
 - Shell exit 后 kernel_main 通过 `task_waitpid(shell_pid)` 检测到退出，写入 TEST_FINISH 主动停机
 - syscall 陷阱支持静默模式（`trap_silent=1`），Shell 运行时抑制 TRAP 日志噪音
 
@@ -133,6 +112,7 @@ minios> _
 | PLIC | plic.h/cpp | ✅ 完成 | 独立可测，pending/senable/spriority/sclaim 寄存器读写 |
 | CLINT | clint.h/cpp | ✅ 完成 | 独立可测，mtime/mtimecmp 寄存器读写 |
 | UART | uart.h/cpp | ✅ 完成 | NS16550A，stdin/stdout 字符 I/O，stdin 线程可控启动 |
+| 块设备 | block_device.h/cpp + bus.h/cpp | ✅ 完成 | `0x10001000` 同步 MMIO，512 B 扇区，1 MiB 镜像，写入立即刷新，支持 `--disk PATH` |
 | CPU | cpu.h/cpp | ✅ 完成 | PC、32 通用寄存器、M/S/U 模式、fetch/execute/handle_exception |
 | Bus MMIO 路由 | bus.h/cpp | ✅ 完成 | UART/CLINT/PLIC/DRAM 全部路由，循环依赖已解决 |
 | MMU | mmu.h/cpp | ✅ 完成（阶段 10） | Sv39 地址翻译，三级页表遍历，4KB/2MB 页支持，权限检查，Bare/Sv39 模式 |
@@ -164,12 +144,15 @@ minios> _
 | RAMFS 最小内存文件系统 | ramfs.h/c + syscall.h/c + kernel.c + Makefile | ✅ 完成（模块七） | 8 文件槽位，每个 4096 字节，create/write/read/close，sys_write/sys_read fd 分派（0=stdin, 1=stdout, >=2=RAMFS），SYS_OPEN(56)/SYS_CLOSE(57)，内核自测通过 |
 | 完整进程管理 | task.h/c + sync.h/c + user.h/c + syscall.h/c + trap.S/c | ✅ 完成（模块八） | 完整 PCB、FCFS/RR、10ms 可配置时间片、READY/RUNNING/BLOCKED/ZOMBIE、信号量、互斥锁、独立 Sv39 地址空间、fork/exec、exit/wait/waitpid、父子树与孤儿接管 |
 | 交互式 Shell | os/kernel/user_entry.S + kernel.c + syscall.c/h + trap.c | ✅ 完成（模块九） | U 模式纯汇编 Shell，逐字符行编辑（回显/退格/换行提交），help/echo/ps/run/clear/exit 命令分发，run 通过 fork+exec+waitpid 启动子进程，SYS_PS(400) 打印进程表，trap 静默模式抑制 syscall 日志噪音 |
+| 启动美化与诊断开关 | kernel.c + Makefile + ramfs.c/task.c/timer.c/user.c | ✅ 完成（2026-06-15） | boot_banner() ASCII 启动横幅，boot_status() 统一 [OK]/[FAIL] 状态线，MINIOS_BOOT_COLOR ANSI 着色，MINIOS_BOOT_DIAGNOSTICS 条件编译控制自测代码和详细初始化日志，Shell banner 从 U 模式迁移至内核 |
+| 持久化 MiniFS | block.c + minifs.h/c + syscall.c + task.c | ✅ 完成（2026-06-15） | 超级块、位图、64 inode、层级目录、绝对/相对路径、`.`/`..`、每文件 8 个直接块（最大 4096 B）、每任务 cwd 与独立 fd 偏移 |
+| Shell 文件与进程命令 | user_entry.S + syscall.c/h + task.c/h | ✅ 完成（2026-06-15） | `ls/cd/pwd/cat/run [&]/kill`，程序按 cwd→`/tests`→`/bin` 搜索，后台回收，内置 spin/fstest/forktest |
 
 ### 未完成的扩展
 
 | 模块 | 状态 |
 |------|------|
-| 通用 ELF 文件解析器与外部程序加载 | ❌ 未开始（当前 exec 加载两个内置用户映像） |
+| 通用 ELF 文件解析器与外部程序加载 | ❌ 未开始（当前 exec 解析 MiniFS 可执行 inode，再加载内核内置映像） |
 
 ## 五、指令集覆盖
 
@@ -339,6 +322,36 @@ minios> _
 - kernel_main 从旧的多任务 demo (idle reap zombies) 简化为 `task_create("shell") + waitpid(shell) + halt`
 - trap_handler 的 `quiet_syscall` 判断避免对每个 sys_read(0) 调用都打印 4 行 TRAP 日志
 
+### Decision 21: 启动美化、诊断开关与 Shell Banner 迁移
+
+**决策**: 用有条件编译的 `MINIOS_BOOT_DIAGNOSTICS` 宏控制详细初始化日志和自测代码，用 `MINIOS_BOOT_COLOR` 控制 ANSI 着色，Shell 启动 banner 从 U 模式 user_entry.S 迁移到内核 kernel_main
+**理由**:
+- 模块八/九留下的自测函数（内存分配器、ECALL、系统调用、RAMFS、FCFS 调度）属于开发阶段的诊断代码，日常运行不应出现，需条件编译消除
+- `#if` 条件编译优于运行时 `if(verbose)`：关闭时连代码都不会链接进 kernel.bin，零运行时开销且节省裸机内存
+- Shell banner 属于"系统启动"行为而非"用户程序"行为，应由内核控制打印时机
+- Linux `[  OK  ]` 风格的启动日志是 OS 开发的惯例，结构化状态线方便定位故障子系统
+**后果**:
+- kernel_main 从散乱的 printk 调用改为顺序 `boot_status()` 调用：物理内存 → 虚拟内存 → RAMFS → Shell
+- `start_shell()` 函数抽取，将调度器初始化、Shell 创建、timer 初始化、trap 静默封装在一起
+- `make BOOT_DIAGNOSTICS=1` 开启诊断模式，`make BOOT_COLOR=0` 关闭颜色（如日志重定向）
+- user_entry.S 精简 6 行（删除 shell_banner 字符串和打印调用）
+
+### Decision 22: 宿主磁盘 + MiniFS + 内置程序映像
+
+**决策**: CEMU 提供同步 MMIO 块设备，MiniOS 使用固定布局 MiniFS；目录中的可执行 inode 只保存内置映像编号，首版不加载 ELF。
+
+**理由**:
+- 1 MiB 宿主文件足以演示真实的跨重启持久化，同时设备模型和磁盘格式保持可解释
+- 固定 64 inode、8 个直接块避免引入间接块、缓存和日志系统，适合教学内核
+- 将“路径解析”和“程序映像加载”分开，可以先完整演示 `ls/cd/run/kill`，以后再把映像编号替换为 ELF 文件内容
+
+**后果**:
+- 默认镜像为 `kernel.bin` 同目录的 `disk.img`，`--disk PATH` 可覆盖；错误尺寸或非法超级块不会被自动覆盖
+- syscall 文件后端由 RAMFS 切换到 MiniFS，RAMFS 仅保留在诊断模式中做历史回归
+- PCB 保存 cwd inode，fork 继承 cwd；全局内核 fd 表按 owner PID 隔离并维护独立偏移
+- 新增 `SYS_LIST/CHDIR/GETCWD/EXEC_PATH/KILL`（401-405）
+- 修复一次关键上下文切换问题：子进程退出后不能强制设置 `SPP=1`，必须保留被调度目标自己的 `sstatus`，否则用户 Shell 会以 S-mode 返回并在用户栈上处理中断
+
 ## 七、已知问题
 
 | 问题 | 严重性 | 状态 |
@@ -356,8 +369,9 @@ minios> _
 | WFI 指令为 NOP 实现，无法真正暂停 CPU | 低 | 功能正确但效率低，不影响当前阶段 |
 | IDE/LSP 报告 RISC-V 内联汇编寄存器名未知（`a0`/`a1`/`a7`） | 低 | ✅ 已修复 — 宿主 x86 语言服务器不认识 RISC-V 寄存器名，用 `#ifdef __riscv` 包裹内联汇编，`#else` 分支提供无害替代。不影响交叉编译和运行 |
 | 抢占式调度 sched_tick 未触发任务切换 | 高 | ✅ 已修复（阶段 9 — SIP/MTIP 委托映射修复） |
-| U 模式 ecall 退出后 sret 保持 SPP=0 导致后续任务运行在 U 模式 | 高 | ✅ 已修复（模块六 — trap_handler 在 U 模式 ecall 重调度后恢复 SPP=1） |
+| U 模式子进程退出后错误强制 SPP=1，导致 Shell 以 S-mode 返回 | 高 | ✅ 已修复（恢复目标任务保存的 sstatus，不覆盖 SPP） |
 | exec 当前加载内置用户映像，尚未实现通用 ELF 文件解析 | 低 | 不影响进程管理验收，列为后续扩展 |
+| MiniFS 不含日志与崩溃恢复 | 中 | 教学版限制；每次块写立即刷新，正常退出和重启场景已验证 |
 
 ## 八、当前文件结构
 
@@ -372,12 +386,13 @@ mycpu/
 │   ├── CURRENT_STATUS.md    (本文档)
 │   └── DEVELOPMENT_LOG.md
 ├── src/
-│   ├── main.cpp             (入口：加载 bin 文件，运行主循环)
+│   ├── main.cpp             (入口：加载 bin 与 disk.img，解析 --disk，运行主循环)
 │   ├── param.h              (地址常量、CSR 编号、掩码定义)
 │   ├── log.h                (日志/彩色输出)
 │   ├── cpu.h / cpu.cpp      (CPU 核心：PC、寄存器、fetch/execute 循环)
 │   ├── dram.h / dram.cpp    (128MB 物理内存)
-│   ├── bus.h / bus.cpp      (总线：MMIO 地址路由到 DRAM/UART/CLINT/PLIC)
+│   ├── bus.h / bus.cpp      (总线：MMIO 地址路由到 DRAM/UART/CLINT/PLIC/块设备)
+│   ├── block_device.h / .cpp(1 MiB 宿主磁盘：同步扇区读写与持久化刷新)
 │   ├── csr.h / csr.cpp      (控制状态寄存器)
 │   ├── exception.h / .cpp   (异常建模)
 │   ├── instructions.h / .cpp(指令实现 + dispatch table，约 50 条指令)
@@ -391,7 +406,7 @@ mycpu/
 │   ├── boot/
 │   │   └── start.S          (启动汇编：设栈、清零 BSS、配置 medeleg/mideleg/stvec、mret 切换到 S 模式 → kernel_main)
 │   ├── kernel/
-│   │   ├── kernel.c         (内核入口：printk 演示 + 内存分配器测试 + ECALL trap + 系统调用测试 + 抢占式调度测试 + 用户模式演示)
+│   │   ├── kernel.c         (结构化启动、可选诊断、MiniFS 初始化与 Shell 生命周期)
 │   │   ├── uart.h           (UART 驱动头文件)
 │   │   ├── uart.c           (UART 驱动：uart_putc/uart_puts)
 │   │   ├── printk.h         (内核日志头文件)
@@ -403,18 +418,19 @@ mycpu/
 │   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + mtimecmp 设置，S 模式 STIE)
 │   │   ├── mem.h            (物理内存分配器头文件)
 │   │   ├── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
-│   │   ├── task.h           (任务管理头文件：task_struct + context + sched_tick)
-│   │   ├── task.c           (任务管理：task_init/create/yield/schedule/sched_tick)
+│   │   ├── task.h           (任务管理头文件：PCB、cwd、context、调度与 kill)
+│   │   ├── task.c           (任务管理：调度、fork/exit/waitpid/kill、cwd 继承)
 │   │   ├── switch.S         (上下文切换汇编：switch_to 保存/恢复 callee-saved 寄存器)
-│   │   ├── syscall.h        (系统调用头文件：SYS_WRITE/SYS_EXIT + syscall_dispatch)
-│   │   ├── syscall.c        (系统调用：sys_write/sys_exit + trap frame 中 a0/a7 读写)
+│   │   ├── syscall.h        (系统调用号：进程、文件、目录、路径执行与 kill)
+│   │   ├── syscall.c        (系统调用分派：MiniFS fd、cwd、exec path 与进程控制)
 │   │   ├── user.h           (用户模式头文件：user_init + enter_user)
 │   │   ├── user.c           (用户模式：分配物理页 + 构建用户页表 + 复制用户程序 + sret 切换)
-│   │   ├── user_entry.S     (用户程序 0：交互式 Shell，纯汇编实现逐字符行编辑+命令分发)
+│   │   ├── user_entry.S     (Shell + spin/fstest/forktest 内置位置无关用户映像)
 │   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init + 全局页表指针导出)
 │   │   ├── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP + 暴露全局页表指针)
-│   │   ├── ramfs.h          (RAMFS 头文件：文件表结构定义 + create/write/read/close 接口)
-│   │   └── ramfs.c          (RAMFS：8 文件槽 × 4096 字节，固定大小内存文件表)
+│   │   ├── ramfs.h / .c     (旧 RAMFS，仅用于诊断回归)
+│   │   ├── block.h / .c     (MiniOS MMIO 块设备驱动)
+│   │   └── minifs.h / .c    (持久化层级文件系统、路径解析、fd 与可执行 inode)
 │   └── include/
 │       └── csr.h            (CSR 访问抽象层)
 ├── tests/

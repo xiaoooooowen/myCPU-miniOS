@@ -9,11 +9,12 @@
 
 namespace cemu {
 
-Bus::Bus(const std::vector<uint8_t>& code)
+Bus::Bus(const std::vector<uint8_t>& code, const std::string& disk_path)
     : dram(code),
       uart(std::make_unique<Uart>(false)),
       clint(),
-      plic() {}
+      plic(),
+      block(disk_path) {}
 
 Bus::~Bus() = default;
 
@@ -45,6 +46,8 @@ std::optional<uint64_t> Bus::load(uint64_t addr, uint64_t size) {
     LOG(INFO, "Bus loading from TEST_FINISH address ", std::hex, addr, " (halted=", halted, ").");
     return halted ? 1 : 0;
   }
+  if (addr >= BLOCK_BASE && addr <= BLOCK_END)
+    return block.load(addr, size);
   throw Exception(ExceptionType::LoadAccessFault, addr);
 }
 
@@ -71,6 +74,10 @@ bool Bus::store(uint64_t addr, uint64_t size, uint64_t value) {
   if (addr >= TEST_FINISH && addr <= TEST_FINISH_END) {
     LOG(INFO, "Bus storing value ", std::hex, value, " at TEST_FINISH address ", addr, " -> halting simulation.");
     halted = true;
+    return true;
+  }
+  if (addr >= BLOCK_BASE && addr <= BLOCK_END) {
+    block.store(addr, size, value);
     return true;
   }
   throw Exception(ExceptionType::StoreAMOAccessFault, addr);
