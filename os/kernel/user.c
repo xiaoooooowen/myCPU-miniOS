@@ -7,6 +7,10 @@
 #define TEST_FINISH_PA 0x100000ULL
 #define SATP_SV39      (8ULL << 60)
 
+#ifndef MINIOS_BOOT_DIAGNOSTICS
+#define MINIOS_BOOT_DIAGNOSTICS 0
+#endif
+
 extern char user_entry[];
 extern char user_entry_end[];
 extern char user_worker[];
@@ -150,8 +154,10 @@ void user_init(void) {
 
     csr_write(satp, space.satp);
     __asm__ volatile("sfence.vma x0, x0");
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("User address space ready: pid=%d root=%lx\n",
            task_current_pid(), (uint64_t)space.root);
+#endif
 }
 
 int user_exec(uint64_t *tf, int image_id) {

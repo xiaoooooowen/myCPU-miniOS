@@ -2,6 +2,10 @@
 #include "printk.h"
 #include <stddef.h>
 
+#ifndef MINIOS_BOOT_DIAGNOSTICS
+#define MINIOS_BOOT_DIAGNOSTICS 0
+#endif
+
 /* 固定大小文件表 */
 static struct ramfs_file files[RAMFS_MAX_FILES];
 
@@ -14,8 +18,10 @@ void ramfs_init(void) {
         files[i].size = 0;
         files[i].name[0] = '\0';
     }
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("RAMFS initialized (%d files, %d bytes each)\n",
            RAMFS_MAX_FILES, RAMFS_DATA_SIZE);
+#endif
 }
 
 int ramfs_create(const char *name) {

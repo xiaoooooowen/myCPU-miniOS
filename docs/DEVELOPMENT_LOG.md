@@ -5,6 +5,68 @@
 
 ***
 
+## 2026-06-15 — 启动美化与诊断开关
+
+### 背景
+
+模块九完成后，MiniOS 启动日志冗长（每个模块初始化都打印详细信息），在正式演示场景中显得杂乱。同时，模块八/九开发期间产生的自测代码（内存分配器、ECALL trap、系统调用、RAMFS、FCFS 调度）在正常运行中不应出现。需要一个"启动美化 + 诊断开关"机制来区分日常运行和调试模式。
+
+### 核心设计
+
+**启动美化（Boot Beautification）**：
+- `boot_banner()`：ASCII art 欢迎横幅
+- `boot_status(ok, component, detail)`：统一的 `[ OK ]` / `[FAIL]` 格式化状态线
+- `boot_status_pages(ok, pages)`：物理内存专项状态线（含页数显示）
+- `MINIOS_BOOT_COLOR` 宏（默认 1）：绿色 `[ OK ]` / 红色 `[FAIL]` 着色的 ANSI 转义序列
+
+**诊断开关（Diagnostic Toggle）**：
+- `MINIOS_BOOT_DIAGNOSTICS` 宏（默认 0）：控制开发阶段的自测代码和详细初始化日志
+- Makefile 中 `BOOT_DIAGNOSTICS ?= 0`、`BOOT_COLOR ?= 1`，构建时可通过 `make BOOT_DIAGNOSTICS=1` 开启
+- 所有模块初始化日志（ramfs/task/timer/user）统一用 `#if MINIOS_BOOT_DIAGNOSTICS` 包裹
+
+**kernel_main 重构**：
+- 原来的"先 printk 各种初始化信息，再创建 Shell"改为"结构化启动序列"：
+  物理内存 → 虚拟内存 → RAMFS → (可选诊断) → Shell → 欢迎信息 → 开中断 → waitpid 循环
+- `start_shell()` 函数抽取，封装 scheduler 初始化、Shell 进程创建、timer 初始化、trap 静默模式
+- 原有的自测函数（`diagnostic_*`）全部移到 `#if MINIOS_BOOT_DIAGNOSTICS` 条件编译块内
+
+**Shell banner 迁移**：
+- Shell 启动 banner (`\nMiniOS shell\nType 'help' for commands.\n`) 从 `user_entry.S` 移除
+- 改为在 `kernel_main` 中 Shell 创建完成后统一输出欢迎信息
+
+### 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `os/Makefile` | 新增 `BOOT_DIAGNOSTICS`/`BOOT_COLOR` 变量，传入编译定义 |
+| `os/kernel/kernel.c` | 大幅重构：新增 `boot_banner()`/`boot_status()`/`boot_status_pages()`/`start_shell()`，诊断代码条件编译，Shell banner 迁移 |
+| `os/kernel/ramfs.c` | `ramfs_init()` 日志加 `#if MINIOS_BOOT_DIAGNOSTICS` 守卫 |
+| `os/kernel/task.c` | `task_init()`/`task_create()` 日志加守卫 |
+| `os/kernel/timer.c` | `timer_init()` 日志加守卫 |
+| `os/kernel/user.c` | `user_init()` 日志加守卫 |
+| `os/kernel/user_entry.S` | 删除 `shell_banner` 字符串及 shell_start 中的 banner 打印 |
+
+### 构建方式
+
+```bash
+# 日常运行：干净启动（无诊断日志、有颜色）
+cd os && make
+
+# 调试模式：开启诊断自测
+cd os && make BOOT_DIAGNOSTICS=1
+
+# 无颜色输出（如日志重定向到文件）
+cd os && make BOOT_COLOR=0
+```
+
+### 经验笔记
+
+1. **条件编译优于运行时 if**：`#if MINIOS_BOOT_DIAGNOSTICS` 在关闭时连诊断函数的代码都不会链接进 kernel.bin，节省了宝贵的裸机内存空间。相比运行时 `if(verbose)` 判断，零运行时开销。
+2. **启动日志是 OS 的"脸面"**：Linux 的 `[  OK  ]` 风格启发了这个设计。结构化的启动日志不仅美观，更重要的是方便快速定位哪个子系统初始化失败。
+3. **Shell banner 应属于内核而非用户程序**：原本在 `user_entry.S` 中打印 banner，但 Shell 作为 U 模式程序不应该假设自己是在什么环境下被启动的。banner 迁移到 `kernel_main` 后，内核可以控制何时显示欢迎信息（例如未来可能运行非 Shell 的用户程序）。
+
+***
+
 ## 2026-06-13 — 模块九：交互式 Shell
 
 ### 背景

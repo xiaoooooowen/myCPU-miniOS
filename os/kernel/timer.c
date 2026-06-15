@@ -2,6 +2,10 @@
 #include "printk.h"
 #include "../include/csr.h"
 
+#ifndef MINIOS_BOOT_DIAGNOSTICS
+#define MINIOS_BOOT_DIAGNOSTICS 0
+#endif
+
 static volatile uint64_t *mtime = (volatile uint64_t *)CLINT_MTIME;
 static volatile uint64_t *mtimecmp = (volatile uint64_t *)CLINT_MTIMECMP;
 static unsigned int tick_count = 0;
@@ -15,8 +19,10 @@ void timer_init(void) {
     /* 使能监管模式定时器中断（sie.STIE） */
     csr_set(sie, SIE_STIE);
 
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("Timer initialized: slice=%dms interval=%ld ticks\n",
            (int)timeslice_ms, (long)timer_interval);
+#endif
 }
 
 void timer_handle(void) {

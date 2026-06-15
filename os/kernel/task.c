@@ -5,6 +5,10 @@
 #include "timer.h"
 #include "../include/csr.h"
 
+#ifndef MINIOS_BOOT_DIAGNOSTICS
+#define MINIOS_BOOT_DIAGNOSTICS 0
+#endif
+
 static struct task tasks[MAX_TASKS];
 static struct task *current = NULL;
 static int task_count = 0;
@@ -183,8 +187,10 @@ void task_init(void) {
     copy_name(tasks[0].name, "idle");
     current = &tasks[0];
 
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("Process subsystem initialized: policy=%s quantum=%d tick(s)\n",
            task_scheduler_name(), (int)scheduler_quantum);
+#endif
 }
 
 int task_create(void (*entry)(void), const char *name) {
@@ -233,9 +239,11 @@ int task_create(void (*entry)(void), const char *name) {
     task->trap_ctx.satp = csr_read(satp);
     task_count++;
 
+#if MINIOS_BOOT_DIAGNOSTICS
     printk("Created process '%s' pid=%d ppid=%d stack=%lx entry=%lx\n",
            task->name, task->pid, task->ppid,
            (uint64_t)task->stack, (uint64_t)entry);
+#endif
     return task->pid;
 }
 

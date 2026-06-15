@@ -3,7 +3,12 @@ CC = $(CROSS_COMPILE)gcc
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 
+BOOT_DIAGNOSTICS ?= 0
+BOOT_COLOR ?= 1
+
 CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany -ffreestanding -nostdlib -nostartfiles -O0 -g -DMINIOS_USE_S_MODE
+CFLAGS += -DMINIOS_BOOT_DIAGNOSTICS=$(BOOT_DIAGNOSTICS)
+CFLAGS += -DMINIOS_BOOT_COLOR=$(BOOT_COLOR)
 LDFLAGS = -T linker.ld -nostdlib
 
 SRC_DIR = .

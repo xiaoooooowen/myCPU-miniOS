@@ -11,9 +11,6 @@
 user_entry:
     j shell_start
 
-shell_banner:
-    .ascii "\nMiniOS shell\nType 'help' for commands.\n"
-shell_banner_end:
 shell_prompt:
     .ascii "minios> "
 shell_prompt_end:
@@ -71,9 +68,6 @@ shell_strcmp:
 
 shell_start:
     addi sp, sp, -128          /* 64-byte line buffer plus scratch space */
-    la a1, shell_banner
-    li a2, 40
-    call shell_write
 
 shell_prompt_loop:
     la a1, shell_prompt
