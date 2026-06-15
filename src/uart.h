@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <termios.h>
 #include <thread>
 #include <vector>
 #include "exception.h"
@@ -33,6 +34,11 @@ class Uart {
  private:
   std::thread stdin_thread;
   std::atomic<bool> stdin_running;
+  bool terminal_configured = false;
+  struct termios original_terminal {};
+
+  void configure_terminal();
+  void restore_terminal();
   void stdin_listener();
 };
 

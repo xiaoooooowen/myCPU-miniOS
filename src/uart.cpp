@@ -21,11 +21,34 @@ Uart::~Uart() {
   if (stdin_thread.joinable()) {
     stdin_thread.join();
   }
+  restore_terminal();
 }
 
 void Uart::start_stdin_listener() {
-  stdin_running.store(true);
+  if (stdin_running.exchange(true))
+    return;
+  configure_terminal();
   stdin_thread = std::thread(&Uart::stdin_listener, this);
+}
+
+void Uart::configure_terminal() {
+  if (!isatty(STDIN_FILENO) ||
+      tcgetattr(STDIN_FILENO, &original_terminal) != 0)
+    return;
+
+  struct termios terminal = original_terminal;
+  terminal.c_lflag &= static_cast<tcflag_t>(~(ECHO | ICANON));
+  terminal.c_cc[VMIN] = 1;
+  terminal.c_cc[VTIME] = 0;
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &terminal) == 0)
+    terminal_configured = true;
+}
+
+void Uart::restore_terminal() {
+  if (!terminal_configured)
+    return;
+  tcsetattr(STDIN_FILENO, TCSANOW, &original_terminal);
+  terminal_configured = false;
 }
 
 void Uart::stdin_listener() {

@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <csignal>
 #include <cstdint>
 #include <fstream>
 #include <chrono>
@@ -9,6 +10,14 @@
 #include "log.h"
 #include "exception.h"
 #include "param.h"
+
+namespace {
+volatile std::sig_atomic_t stop_requested = 0;
+
+void request_stop(int) {
+  stop_requested = 1;
+}
+}  // namespace
 
 int main(int argc, char* argv[]) {
   if (argc != 2 && argc != 4) {
@@ -32,6 +41,8 @@ int main(int argc, char* argv[]) {
                 : std::filesystem::path(argv[1]).parent_path() / "disk.img";
   try {
     cemu::Cpu cpu(code, disk_path.string());
+    std::signal(SIGINT, request_stop);
+    std::signal(SIGTERM, request_stop);
 
   // 启动 UART 标准输入监听，用于 OS 运行时读取终端输入
   cpu.bus.start_stdin();
@@ -40,6 +51,9 @@ int main(int argc, char* argv[]) {
   const auto start_time = std::chrono::steady_clock::now();
 
   while (true) {
+    if (stop_requested)
+      break;
+
     // 检查是否被内核要求停机（TEST_FINISH 设备写入）
     if (cpu.bus.is_halted()) {
       LOG(cemu::INFO, "Simulation halted by kernel.");
