@@ -869,7 +869,7 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
   TRACE_LOG("Instruction: 0x", std::hex, inst, std::dec);
   TRACE_LOG("Executing instruction with opcode: 0x", std::hex, opcode, std::dec);
 
-  std::unordered_map<uint32_t, ExecuteFunction> opcodeTable = {
+  static const std::unordered_map<uint32_t, ExecuteFunction> opcodeTable = {
     {0x17, executeAUIPC},
     {0x37, executeLui},
     {0x67, executeJALR},
@@ -892,7 +892,8 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
 
   TRACE_LOG("funct3: 0x", std::hex, funct3, std::dec);
 
-  std::unordered_map<std::tuple<uint32_t, uint32_t>, ExecuteFunction> instructionMap = {
+  static const std::unordered_map<std::tuple<uint32_t, uint32_t>,
+                                  ExecuteFunction> instructionMap = {
     {std::make_tuple(0x03, 0x0), executeLb},
     {std::make_tuple(0x03, 0x1), executeLh},
     {std::make_tuple(0x03, 0x2), executeLw},
@@ -942,7 +943,9 @@ std::optional<uint64_t> InstructionExecutor::execute(Cpu& cpu, uint32_t inst) {
 
   TRACE_LOG("funct7: 0x", std::hex, funct7, std::dec);
 
-  std::unordered_map<std::tuple<uint32_t, uint32_t, uint32_t>, ExecuteFunction> instruction2Map = {
+  static const std::unordered_map<
+      std::tuple<uint32_t, uint32_t, uint32_t>,
+      ExecuteFunction> instruction2Map = {
     {std::make_tuple(0x13, 0x5, 0x00), executeSrli},
     {std::make_tuple(0x13, 0x5, 0x10), executeSrai},
     {std::make_tuple(0x33, 0x0, 0x00), executeAdd},

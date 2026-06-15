@@ -69,6 +69,7 @@ struct process_fds {
     int used;
     int pid;
     int fd[MINIFS_MAX_FD];
+    uint16_t cloexec;
 };
 
 static struct open_file open_files[MINIFS_MAX_OPEN_FILES];
@@ -475,6 +476,7 @@ static int install_fd(struct process_fds *process, int ofd) {
     for (int fd = 0; fd < MINIFS_MAX_FD; fd++) {
         if (process->fd[fd] < 0) {
             process->fd[fd] = ofd;
+            process->cloexec &= (uint16_t)~(1U << fd);
             return fd;
         }
     }
@@ -522,6 +524,7 @@ int minifs_process_init(int pid) {
         return -1;
     process->used = 1;
     process->pid = pid;
+    process->cloexec = 0;
     for (int i = 0; i < MINIFS_MAX_FD; i++)
         process->fd[i] = -1;
     int input = alloc_ofd(OFD_CONSOLE_IN, MINIFS_O_RDONLY, 0);
@@ -545,6 +548,7 @@ int minifs_process_fork(int parent_pid, int child_pid) {
     if (parent == NULL || minifs_process_init(child_pid) < 0)
         return -1;
     struct process_fds *child = find_process(child_pid);
+    child->cloexec = parent->cloexec;
     for (int fd = 0; fd < MINIFS_MAX_FD; fd++) {
         if (child->fd[fd] >= 0)
             put_ofd(child->fd[fd]);
@@ -564,7 +568,34 @@ void minifs_close_all(int pid) {
             put_ofd(process->fd[fd]);
         process->fd[fd] = -1;
     }
+    process->cloexec = 0;
     process->used = 0;
+}
+
+int minifs_set_cloexec(int pid, int fd, int on) {
+    struct process_fds *process = find_process(pid);
+    if (process == NULL || fd < 0 || fd >= MINIFS_MAX_FD ||
+        process->fd[fd] < 0)
+        return -1;
+    if (on)
+        process->cloexec |= (uint16_t)(1U << fd);
+    else
+        process->cloexec &= (uint16_t)~(1U << fd);
+    return 0;
+}
+
+void minifs_close_exec_fds(int pid) {
+    struct process_fds *process = find_process(pid);
+    if (process == NULL)
+        return;
+    for (int fd = 0; fd < MINIFS_MAX_FD; fd++) {
+        if (process->cloexec & (uint16_t)(1U << fd)) {
+            if (process->fd[fd] >= 0)
+                put_ofd(process->fd[fd]);
+            process->fd[fd] = -1;
+            process->cloexec &= (uint16_t)~(1U << fd);
+        }
+    }
 }
 
 int minifs_open(int pid, uint32_t cwd, const char *path, int flags) {
@@ -613,6 +644,7 @@ int minifs_close(int pid, int fd) {
         return -1;
     put_ofd(process->fd[fd]);
     process->fd[fd] = -1;
+    process->cloexec &= (uint16_t)~(1U << fd);
     return 0;
 }
 
@@ -763,6 +795,7 @@ int minifs_dup2(int pid, int oldfd, int newfd) {
         put_ofd(process->fd[newfd]);
     process->fd[newfd] = process->fd[oldfd];
     open_files[process->fd[newfd]].refs++;
+    process->cloexec &= (uint16_t)~(1U << newfd);
     return newfd;
 }
 

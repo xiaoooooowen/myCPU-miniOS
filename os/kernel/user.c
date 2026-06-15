@@ -215,8 +215,9 @@ static int load_elf(uint32_t inode, struct loaded_program *program) {
         minifs_inode_mode(inode, &mode) < 0 ||
         !(mode & MINIFS_MODE_EXEC) ||
         minifs_pread(inode, 0, &header, sizeof(header)) != sizeof(header) ||
-        !valid_elf_header(&header, file_size) ||
-        create_empty_space(&program->space) < 0)
+        !valid_elf_header(&header, file_size))
+        return -1;
+    if (create_empty_space(&program->space) < 0)
         return -1;
 
     for (uint16_t i = 0; i < header.phnum; i++) {
@@ -228,6 +229,11 @@ static int load_elf(uint32_t inode, struct loaded_program *program) {
             goto fail;
         if (segment.type != ELF_PT_LOAD)
             continue;
+        if (segment.memsz == 0) {
+            if (segment.filesz != 0)
+                goto fail;
+            continue;
+        }
         if (segment.filesz > segment.memsz ||
             segment.offset > file_size ||
             segment.filesz > file_size - segment.offset ||
@@ -235,8 +241,6 @@ static int load_elf(uint32_t inode, struct loaded_program *program) {
             segment.vaddr + segment.memsz < segment.vaddr ||
             segment.vaddr + segment.memsz > USER_STACK_BOTTOM)
             goto fail;
-        if (segment.memsz == 0)
-            continue;
         uint64_t flags = 0;
         if (segment.flags & ELF_PF_R)
             flags |= PTE_R;
@@ -372,8 +376,9 @@ static int prepare_program(const char *path, const char *const argv[],
                            struct loaded_program *program) {
     uint32_t inode;
     zero_space(&program->space);
-    if (minifs_resolve_file(task_current_cwd(), path, &inode) < 0 ||
-        load_elf(inode, program) < 0)
+    if (minifs_resolve_file(task_current_cwd(), path, &inode) < 0)
+        return -1;
+    if (load_elf(inode, program) < 0)
         return -1;
     if (build_initial_stack(program, argv, envp) < 0) {
         user_space_destroy(&program->space);

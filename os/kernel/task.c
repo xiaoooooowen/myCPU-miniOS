@@ -11,6 +11,8 @@
 #endif
 
 static struct task tasks[MAX_TASKS];
+static uint8_t task_stacks[MAX_TASKS][TASK_KERNEL_STACK_SIZE]
+    __attribute__((aligned(PAGE_SIZE)));
 static struct task *current = NULL;
 static int task_count = 0;
 static int next_pid = 1;
@@ -114,7 +116,7 @@ static void restore_trap_context(const struct task *task, uint64_t *tf) {
     trap_status_write(task->trap_ctx.status);
     trap_scratch_write(task->stack == NULL
         ? (uint64_t)&_stack_top
-        : (uint64_t)task->stack + PAGE_SIZE);
+        : (uint64_t)task->stack + TASK_KERNEL_STACK_SIZE);
     if (csr_read(satp) != task->trap_ctx.satp) {
         csr_write(satp, task->trap_ctx.satp);
         __asm__ volatile("sfence.vma x0, x0");
@@ -224,9 +226,7 @@ int task_create(void (*entry)(void), const char *name) {
         return -1;
 
     struct task *task = &tasks[slot];
-    void *stack = kalloc();
-    if (stack == NULL)
-        return -1;
+    void *stack = task_stacks[slot];
 
     for (int i = 0; i < TASK_REG_COUNT; i++)
         task->trap_ctx.regs[i] = 0;
@@ -249,14 +249,13 @@ int task_create(void (*entry)(void), const char *name) {
     copy_name(task->name, name);
 
     task->ctx.ra = (uint64_t)entry;
-    task->ctx.sp = (uint64_t)stack + PAGE_SIZE;
+    task->ctx.sp = (uint64_t)stack + TASK_KERNEL_STACK_SIZE;
     task->trap_ctx.regs[2] = task->ctx.sp;
     task->trap_ctx.epc = (uint64_t)entry;
     task->trap_ctx.status = trap_status_read() | SSTATUS_SPP | SSTATUS_SPIE;
     task->trap_ctx.satp = csr_read(satp);
     task_count++;
     if (minifs_process_init(task->pid) < 0) {
-        kfree(stack);
         task->stack = NULL;
         task->state = TASK_UNUSED;
         task_count--;
@@ -287,9 +286,7 @@ int task_fork_from_trap(uint64_t *tf, uint64_t child_epc,
     if (slot < 0)
         return -1;
 
-    void *kernel_stack = kalloc();
-    if (kernel_stack == NULL)
-        return -1;
+    void *kernel_stack = task_stacks[slot];
 
     struct task *child = &tasks[slot];
     for (int i = 0; i < TASK_REG_COUNT; i++)
@@ -320,7 +317,6 @@ int task_fork_from_trap(uint64_t *tf, uint64_t child_epc,
     task_count++;
     if (minifs_process_fork(current->pid, child->pid) < 0) {
         child->has_user_space = 0;
-        kfree(kernel_stack);
         child->stack = NULL;
         child->state = TASK_UNUSED;
         task_count--;
@@ -489,8 +485,6 @@ int task_waitpid(int pid, int *status, int nohang) {
         printk("waitpid: parent=%d reaped child=%d exit=%d\n",
                current->pid, child_pid, child->exit_code);
 #endif
-        if (child->stack != NULL)
-            kfree(child->stack);
         if (child->has_user_space)
             user_space_destroy(&child->address_space);
         minifs_close_all(child_pid);
@@ -546,7 +540,7 @@ void task_set_current_name(const char *name) {
 uint64_t task_current_kernel_stack_top(void) {
     if (current == NULL || current->stack == NULL)
         return (uint64_t)&_stack_top;
-    return (uint64_t)current->stack + PAGE_SIZE;
+    return (uint64_t)current->stack + TASK_KERNEL_STACK_SIZE;
 }
 
 void task_prepare_trap_return(void) {

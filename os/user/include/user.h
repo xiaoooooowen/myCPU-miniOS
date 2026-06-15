@@ -50,6 +50,7 @@ int fork(void);
 int execve(const char *path, char *const argv[], char *const envp[]);
 int waitpid(int pid, int *status, int options);
 int kill(int pid, int signal);
+int set_cloexec(int fd, int on);
 int getprocs(struct process_info *entries, int capacity);
 void exit(int status) __attribute__((noreturn));
 

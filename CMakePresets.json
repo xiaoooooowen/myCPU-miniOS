@@ -3,10 +3,22 @@
     "configurePresets": [
         {
             "name": "default",
-            "displayName": "WSL Debug",
-            "description": "WSL GCC 13.3.0 Debug 构建",
+            "displayName": "WSL Release",
+            "description": "WSL GCC 13.3.0 Release 构建",
             "generator": "Unix Makefiles",
             "binaryDir": "${sourceDir}/build_wsl",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+                "CMAKE_C_COMPILER": "/usr/bin/cc"
+            }
+        },
+        {
+            "name": "wsl-debug",
+            "displayName": "WSL Debug",
+            "description": "用于调试 CEMU 的 WSL GCC Debug 构建",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build_wsl_debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_CXX_COMPILER": "/usr/bin/c++",

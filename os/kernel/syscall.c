@@ -203,6 +203,7 @@ static int sys_execve(uint64_t *trap_frame, uint64_t user_path,
     }
     if (user_execve(trap_frame, path_buffer, exec_argv, exec_envp) < 0)
         return -1;
+    minifs_close_exec_fds(task_current_pid());
     task_set_current_name(path_buffer);
     return 0;
 }
@@ -350,6 +351,10 @@ int syscall_dispatch(uint64_t *trap_frame) {
                     (int)arg0, 128 + signal);
             break;
         }
+        case SYS_SET_CLOEXEC:
+            trap_frame[10] = (uint64_t)minifs_set_cloexec(
+                task_current_pid(), (int)arg0, (int)arg1);
+            break;
         default:
             trap_frame[10] = fail();
             break;

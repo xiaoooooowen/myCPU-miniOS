@@ -164,7 +164,6 @@ static int try_exec(char **argv, char **envp) {
         execve(argv[0], argv, envp);
         return -1;
     }
-    execve(argv[0], argv, envp);
     char path[256];
     strcpy(path, "/bin/");
     strcat(path, argv[0]);
@@ -235,6 +234,10 @@ int main(int argc, char **argv, char **initial_envp) {
         if (direct_exec) {
             int saved_input = dup2(0, 14);
             int saved_output = dup2(1, 15);
+            if (saved_input >= 0)
+                set_cloexec(14, 1);
+            if (saved_output >= 0)
+                set_cloexec(15, 1);
             if (saved_input < 0 || saved_output < 0 ||
                 apply_redirections(&shell_command) < 0 ||
                 try_exec(program_argv, envp) < 0) {

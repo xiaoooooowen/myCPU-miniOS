@@ -9,6 +9,7 @@
 #define TASK_DEFAULT_QUANTUM 1
 #define TASK_WAIT_BLOCKED (-2)
 #define USER_MAX_PAGES 64
+#define TASK_KERNEL_STACK_SIZE (4 * 4096)
 
 /* 任务状态 */
 enum task_state {

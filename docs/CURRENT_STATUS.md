@@ -101,6 +101,10 @@ minios> _
 - `/tests` 包含 `spin/fstest/forktest/argtest`。
 - 支持 PATH 搜索、argv/envp、后台进程、`exec`、`run` 和 `< > >>`。
 - `fstest` 已验证 64 KiB、一级间接块和 seek；磁盘内容跨模拟器重启保留。
+- ELF loader 会跳过 `p_memsz == 0` 的空 `PT_LOAD`，避免为零长度段创建非法用户映射。
+- 每个任务使用 16 KiB、按页对齐的独立静态内核栈；已验证连续多次 `fork/exec/wait`。
+- fd 表支持 close-on-exec；Shell 内建 `exec` 的临时 fd 只在 exec 成功后关闭，失败路径可恢复标准输入输出。
+- 用户 libc 的 `printf` 会正确返回当前支持格式实际写出的字符数。
 - Shell exit 后 kernel_main 通过 `task_waitpid(shell_pid)` 检测到退出，写入 TEST_FINISH 主动停机
 - syscall 陷阱支持静默模式（`trap_silent=1`），Shell 运行时抑制 TRAP 日志噪音
 
@@ -130,7 +134,7 @@ minios> _
 | 定时器驱动 | os/kernel/timer.h/c | ✅ 完成（阶段 4，阶段 9 适配） | CLINT MMIO 读写，mtimecmp 设置，sie.STIE 使能（替代 mie.MTIE），timer_handle 精简为纯 set + count |
 | CPU 中断检测 | cpu.h/cpp | ✅ 完成（阶段 4，阶段 9 增强） | check_pending_interrupts() 支持 S 模式委托中断检测 + handle_interrupt() 支持 S 模式中断处理 |
 | 物理内存分配器 | os/kernel/mem.h/c | ✅ 完成（阶段 5） | bump allocator + 空闲链表混合，kalloc/kfree/mem_free_pages |
-| 任务管理 | os/kernel/task.h/c | ✅ 完成（阶段 6，阶段 7 增强） | task_struct + context 帧，yield() 协作式调度，sched_tick(tf) 抢占式调度入口 |
+| 任务管理 | os/kernel/task.h/c | ✅ 完成（阶段 6，阶段 7 增强） | task_struct + context 帧，16 KiB 独立内核栈，yield() 协作式调度，sched_tick(tf) 抢占式调度入口 |
 | 上下文切换 | os/kernel/switch.S | ✅ 完成（阶段 6） | switch_to 汇编，保存/恢复 callee-saved 寄存器（ra/sp/s0-s11）；抢占式用 trap frame 路径，不调用 switch_to |
 | 系统调用 | os/kernel/syscall.h/c | ✅ 完成（阶段 8） | syscall_dispatch(tf)，SYS_WRITE/SYS_EXIT，trap frame 中读写 a0/a7，ecall 往返验证通过 |
 | 抢占式调度 | task.c (sched_tick) | ✅ 完成（阶段 7） | 定时器中断 → trap_handler → sched_tick(tf) 修改 trap frame + sepc → sret 跳转新任务 |
@@ -149,8 +153,8 @@ minios> _
 | 完整进程管理 | task.h/c + sync.h/c + user.h/c + syscall.h/c + trap.S/c | ✅ 完成（模块八） | 完整 PCB、FCFS/RR、10ms 可配置时间片、READY/RUNNING/BLOCKED/ZOMBIE、信号量、互斥锁、独立 Sv39 地址空间、fork/exec、exit/wait/waitpid、父子树与孤儿接管 |
 | 交互式 Shell | os/kernel/user_entry.S + kernel.c + syscall.c/h + trap.c | ✅ 完成（模块九） | U 模式纯汇编 Shell，逐字符行编辑（回显/退格/换行提交），help/echo/ps/run/clear/exit 命令分发，run 通过 fork+exec+waitpid 启动子进程，SYS_PS(400) 打印进程表，trap 静默模式抑制 syscall 日志噪音 |
 | 启动美化与诊断开关 | kernel.c + Makefile + ramfs.c/task.c/timer.c/user.c | ✅ 完成（2026-06-15） | boot_banner() ASCII 启动横幅，boot_status() 统一 [OK]/[FAIL] 状态线，MINIOS_BOOT_COLOR ANSI 着色，MINIOS_BOOT_DIAGNOSTICS 条件编译控制自测代码和详细初始化日志，Shell banner 从 U 模式迁移至内核 |
-| MiniFS v2 | block.c + minifs.h/c + mkfs_minifs.py | ✅ 完成（2026-06-15） | 8 MiB、256 inode、10 直接块 + 一级间接块、64 KiB、目录、创建删除、seek、16 fd/进程 |
-| ELF 用户空间 | user.c + user/ + syscall.c/h | ✅ 完成（2026-06-15） | ELF64 `ET_EXEC`、`PT_LOAD`、R/W/X Sv39、argv/envp 栈、简化 libc、C Shell 与外部命令 |
+| MiniFS v2 | block.c + minifs.h/c + mkfs_minifs.py | ✅ 完成（2026-06-15） | 8 MiB、256 inode、10 直接块 + 一级间接块、64 KiB、目录、创建删除、seek、16 fd/进程、close-on-exec |
+| ELF 用户空间 | user.c + user/ + syscall.c/h | ✅ 完成（2026-06-15） | ELF64 `ET_EXEC`、非空 `PT_LOAD`、R/W/X Sv39、argv/envp 栈、简化 libc、C Shell 与外部命令 |
 
 ### 未完成的扩展
 

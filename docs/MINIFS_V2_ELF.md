@@ -45,8 +45,9 @@ inode 会失败。
 ## 文件描述符
 
 每个进程有 16 个 fd，内核有 64 个共享 open-file description。
-fd 0/1/2 默认连接 UART。`fork` 继承 fd 并增加引用计数，`execve`
-保留 fd，进程退出时统一关闭。Shell 使用 `open + dup2` 实现：
+fd 0/1/2 默认连接 UART。`fork` 继承 fd、close-on-exec 标志并增加
+引用计数；`execve` 保留普通 fd，关闭标记为 close-on-exec 的 fd，进程
+退出时统一关闭剩余 fd。Shell 使用 `open + dup2` 实现：
 
 ```text
 cat < input.txt

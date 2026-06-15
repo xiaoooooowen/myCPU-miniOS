@@ -34,6 +34,8 @@ int minifs_init(void);
 int minifs_process_init(int pid);
 int minifs_process_fork(int parent_pid, int child_pid);
 void minifs_close_all(int pid);
+int minifs_set_cloexec(int pid, int fd, int on);
+void minifs_close_exec_fds(int pid);
 
 int minifs_open(int pid, uint32_t cwd, const char *path, int flags);
 int minifs_close(int pid, int fd);

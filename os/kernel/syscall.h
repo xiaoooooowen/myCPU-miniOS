@@ -22,6 +22,7 @@
 #define SYS_CHDIR    402
 #define SYS_GETCWD   403
 #define SYS_KILL     405
+#define SYS_SET_CLOEXEC 406
 
 int syscall_dispatch(uint64_t *trap_frame);
 

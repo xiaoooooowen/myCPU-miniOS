@@ -18,6 +18,7 @@
 #define SYS_CHDIR 402
 #define SYS_GETCWD 403
 #define SYS_KILL 405
+#define SYS_SET_CLOEXEC 406
 
 static long syscall3(long number, long first, long second, long third) {
     register long a0 __asm__("a0") = first;
@@ -89,6 +90,10 @@ int waitpid(int pid, int *status, int options) {
 
 int kill(int pid, int signal) {
     return (int)syscall3(SYS_KILL, pid, signal, 0);
+}
+
+int set_cloexec(int fd, int on) {
+    return (int)syscall3(SYS_SET_CLOEXEC, fd, on, 0);
 }
 
 int getprocs(struct process_info *entries, int capacity) {
@@ -192,7 +197,7 @@ int puts(const char *string) {
     return 0;
 }
 
-static void print_unsigned(uint64_t value, unsigned base) {
+static void print_unsigned(uint64_t value, unsigned base, int *written) {
     char digits[32];
     int count = 0;
     do {
@@ -201,8 +206,10 @@ static void print_unsigned(uint64_t value, unsigned base) {
                                 'a' + digit - 10);
         value /= base;
     } while (value != 0);
-    while (count > 0)
+    while (count > 0) {
         putchar(digits[--count]);
+        (*written)++;
+    }
 }
 
 int printf(const char *format, ...) {
@@ -223,27 +230,32 @@ int printf(const char *format, ...) {
         }
         if (format[i] == 's') {
             const char *string = va_arg(arguments, const char *);
-            write(1, string, strlen(string));
+            size_t len = strlen(string);
+            write(1, string, len);
+            written += (int)len;
         } else if (format[i] == 'c') {
             putchar(va_arg(arguments, int));
+            written++;
         } else if (format[i] == 'd') {
             long value = is_long ? va_arg(arguments, long) :
                                    va_arg(arguments, int);
             if (value < 0) {
                 putchar('-');
+                written++;
                 value = -value;
             }
-            print_unsigned((uint64_t)value, 10);
+            print_unsigned((uint64_t)value, 10, &written);
         } else if (format[i] == 'u') {
             uint64_t value = is_long ? va_arg(arguments, unsigned long) :
                                        va_arg(arguments, unsigned int);
-            print_unsigned(value, 10);
+            print_unsigned(value, 10, &written);
         } else if (format[i] == 'x') {
             uint64_t value = is_long ? va_arg(arguments, unsigned long) :
                                        va_arg(arguments, unsigned int);
-            print_unsigned(value, 16);
+            print_unsigned(value, 16, &written);
         } else if (format[i] == '%') {
             putchar('%');
+            written++;
         }
     }
     va_end(arguments);
