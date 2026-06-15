@@ -13,8 +13,12 @@ int main(int argc, char **argv, char **envp) {
         puts("usage: kill [-9|-15] PID");
         return 1;
     }
-    if (kill(atoi(argv[index]), signal) < 0) {
-        puts("kill: failed");
+    int pid = atoi(argv[index]);
+    if (kill(pid, signal) < 0) {
+        term_style_begin(ANSI_RED);
+        printf("kill: cannot terminate PID %d (not found or protected)\n",
+               pid);
+        term_style_end();
         return 1;
     }
     return 0;

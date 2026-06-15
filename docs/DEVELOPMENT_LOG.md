@@ -19,6 +19,8 @@
 - `help` 改为 Built-in commands、External commands、Syntax 三组对齐布局。
 - Shell 解析、`cd`、fork、exec、程序查找和重定向错误统一为红色，后台 PID 使用青色。
 - `ls` 使用蓝色目录和绿色可执行文件，继续保留 `/` 与 `*` 类型标记。
+- 路径和目录使用亮蓝色（ANSI 94），避免普通蓝色在黑色背景上对比度不足。
+- `kill` 失败时显示目标 PID，并提示该进程可能已退出或属于受保护进程。
 - `ps` 表头加粗，并分别用青、绿、黄、红、灰表示 READY、RUNNING、BLOCKED、ZOMBIE 和其他状态。
 - 每个着色区段结束后立即输出 reset，避免颜色泄漏到后续用户程序或宿主终端。
 
@@ -27,6 +29,7 @@
 - 彩色临时磁盘验证提示符、分组帮助、`ls /bin`、`ps`、后台 `spin` 和三类错误输出。
 - `make clean && make BOOT_COLOR=0` 后，启动与 Shell 完整输出中不存在 ANSI ESC 字节，文本布局保持不变。
 - 恢复默认彩色构建后，CEMU CTest 97/97 通过。
+- 连续执行 30 次无效 `kill` 后仍可正常终止后台 `spin`，确认无 fd、任务槽或 exec 资源泄漏。
 - 所有集成验证均使用 `build/` 下临时磁盘，没有覆盖正式 `disk.img`。
 
 ***
