@@ -5,6 +5,22 @@
 
 ***
 
+## 2026-06-15 — MiniFS v2、ELF64 加载器与 C 用户空间
+
+将原有 1 MiB/64 inode/4 KiB 文件的教学原型升级为课程验收版本：
+
+- CEMU 块设备扩展为 8 MiB，并修复 RV64 `LUI` 必须符号扩展 bit 31 的实现错误。
+- MiniFS v2 提供 256 inode、10 个直接块、一级间接块、64 KiB 文件、创建删除、seek、append、truncate 和 fd 引用计数。
+- 新增 `tools/mkfs_minifs.py`，从 staging rootfs 递归导入目录和独立 ELF；默认拒绝覆盖已有镜像。
+- 新增 ELF64 RISC-V 静态加载器、多页 Sv39 用户空间、BSS 清零、argv/envp 栈和原子 exec。
+- 新增用户 `crt0`、简化 libc、C Shell，以及 `/bin`、`/tests` 下 16 个独立程序。
+- Shell 支持 PATH、引号和反斜杠、后台任务、`exec/run` 与 `< > >>`。
+- 97 个 CTest 测试通过；`fstest` 验证精确 64 KiB + seek，`forktest` 验证 fork/exec/wait。
+
+完整说明见 `docs/MINIFS_V2_ELF.md`。
+
+***
+
 ## 2026-06-15 — 持久化 MiniFS、Shell 文件命令与 kill
 
 ### 目标与结果

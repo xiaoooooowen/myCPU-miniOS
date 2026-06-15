@@ -90,7 +90,11 @@ static void fcfs_task_b(void) {
 #endif
 
 static void user_task_entry(void) {
-    user_init();
+    if (user_init() < 0) {
+        task_exit(127);
+        while (1)
+            ;
+    }
 #if MINIOS_BOOT_DIAGNOSTICS
     printk("[UserTask] Entering user mode...\n");
 #endif
@@ -147,7 +151,7 @@ static void diagnostic_syscalls(void) {
         "li a7, 64\n"
         "li a0, 1\n"
         "mv a1, %1\n"
-        "li a2, 21\n"
+        "li a2, 20\n"
         "ecall\n"
         "mv %0, a0\n"
         : "=r"(ret)
@@ -155,9 +159,9 @@ static void diagnostic_syscalls(void) {
         : "a0", "a1", "a2", "a7"
     );
 #else
-    ret = 21;
+    ret = 20;
 #endif
-    printk("sys_write returned: %ld (expected 21)\n", (long)ret);
+    printk("sys_write returned: %ld (expected 20)\n", (long)ret);
 
 #ifdef __riscv
     __asm__ volatile(
@@ -257,6 +261,8 @@ static void diagnostic_fcfs(void) {
 
 static void run_boot_diagnostics(void) {
     printk("\n=== Boot Diagnostics ===\n");
+    task_set_scheduler(SCHED_RR);
+    task_init();
     diagnostic_memory();
     diagnostic_trap();
     diagnostic_syscalls();
@@ -294,7 +300,7 @@ void kernel_main(void) {
                 "Sv39, 128 MiB mapped");
 
     int fs_ready = minifs_init() == 0;
-    boot_status(fs_ready, "MiniFS             ", "1 MiB persistent disk");
+    boot_status(fs_ready, "MiniFS             ", "8 MiB persistent disk");
     if (!fs_ready) {
         printk("Invalid disk image; refusing to overwrite it.\n");
         *(volatile uint32_t *)0x100000 = 0x5555;

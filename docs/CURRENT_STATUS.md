@@ -1,7 +1,9 @@
 # MiniOS / myCPU 项目当前状态
 
 > 冻结时间：2026-06-15
-> 冻结版本：阶段 0.5 至阶段 10 + 模块一至模块九 + 持久化 MiniFS 与进程命令
+> 冻结版本：MiniFS v2 + ELF64 用户程序 + C Shell
+>
+> 详细架构与使用方式见 [MINIFS_V2_ELF.md](MINIFS_V2_ELF.md)。本文后部保留的早期阶段记录仅用于历史回顾；v1 MiniFS 和内嵌 `user_entry.S` 方案已被 v2 取代。
 
 ## 一、环境信息
 
@@ -28,14 +30,14 @@ cmake --build build_wsl -j$(nproc)
 cmake .. -DCEMU_TRACE=ON
 cmake --build build_wsl -j$(nproc)
 
-# MiniOS 内核
+# 内核 + 独立用户 ELF
 cd os && make
 
-# 启动 MiniOS（默认在 kernel.bin 同目录创建/挂载 disk.img）
-./build_wsl/cemu os/build/kernel.bin
+# 从 staging rootfs 创建 8 MiB MiniFS v2 镜像
+make disk FORCE=1
 
-# 指定磁盘镜像
-./build_wsl/cemu os/build/kernel.bin --disk /tmp/minios.disk
+# 自动构建并挂载 os/disk.img
+make run
 ```
 
 ### 构建结果
@@ -54,7 +56,8 @@ cd os && make
 - `build_wsl/libcommon_library.a` — 公共库
 - `os/build/kernel.bin` — MiniOS 裸机二进制
 - `os/build/kernel.elf` — MiniOS ELF 文件（含调试符号）
-- `os/build/disk.img` — 默认 1 MiB 持久化磁盘镜像（首次运行自动创建）
+- `os/build/rootfs/` — 写入磁盘前的用户 ELF 与根目录 staging
+- `os/disk.img` — 8 MiB MiniFS v2 持久化磁盘镜像
 
 ## 三、测试结果（2026-06-15 运行）
 
@@ -62,7 +65,7 @@ cd os && make
 
 | 类别 | 总数 | 通过 | 失败 | 跳过 |
 |------|------|------|------|------|
-| RV 指令测试 (RVTests) | 39 | 39 | 0 | 0 |
+| RV 指令测试 (RVTests) | 40 | 40 | 0 | 0 |
 | CSR 综合测试 (CSRSTest) | 1 | 1 | 0 | 0 |
 | DRAM 测试 (DramTest) | 4 | 4 | 0 | 0 |
 | Bus 测试 (BusTest) | 14 | 14 | 0 | 0 |
@@ -73,7 +76,8 @@ cd os && make
 | CLINT 测试 (ClintTest) | 4 | 4 | 0 | 0 |
 | UART 测试 (UartTest) | 5 | 5 | 0 | 0 |
 | MMU 测试 (MmuTest) | 13 | 13 | 0 | 0 |
-| **合计** | **95** | **95** | **0** | **0** |
+| mkfs MiniFS 测试 | 1 | 1 | 0 | 0 |
+| **合计** | **97** | **97** | **0** | **0** |
 
 ### MiniOS 运行验证
 
@@ -83,7 +87,7 @@ cd os && make
 
  [ OK ] Physical memory    32683 pages free
  [ OK ] Virtual memory     Sv39, 128 MiB mapped
- [ OK ] MiniFS             1 MiB persistent disk
+ [ OK ] MiniFS             8 MiB persistent disk
  [ OK ] Scheduler          RR, 10 ms quantum
  [ OK ] User shell         pid 1
 
@@ -92,11 +96,11 @@ Type 'help' for commands.
 minios> _
 ```
 
-- Shell 作为 U 模式进程运行，通过 `sys_read(0)` 逐字符读取、回显、退格支持、换行提交
-- 命令：`help`、`ls [path]`、`cd path`、`pwd`、`cat file`、`run program [&]`、`ps`、`kill PID`、`echo TEXT`、`clear`、`exit`
-- 首次格式化创建 `/bin`、`/tests`、`/tmp`、`/README`，并预置 `/tests/spin`、`fstest`、`forktest`
-- `fstest` 已验证 `/tmp/fstest.txt` 跨模拟器重启保留；`forktest` 已验证 fork/exec/waitpid 与退出码
-- `kill` 使用退出码 137，拒绝 PID 0、当前 Shell、不存在和已退出任务；Shell 在提示符前非阻塞回收后台任务
+- Shell 是从 `/bin/shell` 加载的独立 C 语言 ELF 用户进程。
+- `/bin` 包含 `ls/cat/echo/pwd/ps/kill/env/mkdir/rm/touch/write`。
+- `/tests` 包含 `spin/fstest/forktest/argtest`。
+- 支持 PATH 搜索、argv/envp、后台进程、`exec`、`run` 和 `< > >>`。
+- `fstest` 已验证 64 KiB、一级间接块和 seek；磁盘内容跨模拟器重启保留。
 - Shell exit 后 kernel_main 通过 `task_waitpid(shell_pid)` 检测到退出，写入 TEST_FINISH 主动停机
 - syscall 陷阱支持静默模式（`trap_silent=1`），Shell 运行时抑制 TRAP 日志噪音
 
@@ -112,7 +116,7 @@ minios> _
 | PLIC | plic.h/cpp | ✅ 完成 | 独立可测，pending/senable/spriority/sclaim 寄存器读写 |
 | CLINT | clint.h/cpp | ✅ 完成 | 独立可测，mtime/mtimecmp 寄存器读写 |
 | UART | uart.h/cpp | ✅ 完成 | NS16550A，stdin/stdout 字符 I/O，stdin 线程可控启动 |
-| 块设备 | block_device.h/cpp + bus.h/cpp | ✅ 完成 | `0x10001000` 同步 MMIO，512 B 扇区，1 MiB 镜像，写入立即刷新，支持 `--disk PATH` |
+| 块设备 | block_device.h/cpp + bus.h/cpp | ✅ 完成 | `0x10001000` 同步 MMIO，512 B 扇区，8 MiB 镜像，写入立即刷新，支持 `--disk PATH` |
 | CPU | cpu.h/cpp | ✅ 完成 | PC、32 通用寄存器、M/S/U 模式、fetch/execute/handle_exception |
 | Bus MMIO 路由 | bus.h/cpp | ✅ 完成 | UART/CLINT/PLIC/DRAM 全部路由，循环依赖已解决 |
 | MMU | mmu.h/cpp | ✅ 完成（阶段 10） | Sv39 地址翻译，三级页表遍历，4KB/2MB 页支持，权限检查，Bare/Sv39 模式 |
@@ -145,8 +149,8 @@ minios> _
 | 完整进程管理 | task.h/c + sync.h/c + user.h/c + syscall.h/c + trap.S/c | ✅ 完成（模块八） | 完整 PCB、FCFS/RR、10ms 可配置时间片、READY/RUNNING/BLOCKED/ZOMBIE、信号量、互斥锁、独立 Sv39 地址空间、fork/exec、exit/wait/waitpid、父子树与孤儿接管 |
 | 交互式 Shell | os/kernel/user_entry.S + kernel.c + syscall.c/h + trap.c | ✅ 完成（模块九） | U 模式纯汇编 Shell，逐字符行编辑（回显/退格/换行提交），help/echo/ps/run/clear/exit 命令分发，run 通过 fork+exec+waitpid 启动子进程，SYS_PS(400) 打印进程表，trap 静默模式抑制 syscall 日志噪音 |
 | 启动美化与诊断开关 | kernel.c + Makefile + ramfs.c/task.c/timer.c/user.c | ✅ 完成（2026-06-15） | boot_banner() ASCII 启动横幅，boot_status() 统一 [OK]/[FAIL] 状态线，MINIOS_BOOT_COLOR ANSI 着色，MINIOS_BOOT_DIAGNOSTICS 条件编译控制自测代码和详细初始化日志，Shell banner 从 U 模式迁移至内核 |
-| 持久化 MiniFS | block.c + minifs.h/c + syscall.c + task.c | ✅ 完成（2026-06-15） | 超级块、位图、64 inode、层级目录、绝对/相对路径、`.`/`..`、每文件 8 个直接块（最大 4096 B）、每任务 cwd 与独立 fd 偏移 |
-| Shell 文件与进程命令 | user_entry.S + syscall.c/h + task.c/h | ✅ 完成（2026-06-15） | `ls/cd/pwd/cat/run [&]/kill`，程序按 cwd→`/tests`→`/bin` 搜索，后台回收，内置 spin/fstest/forktest |
+| MiniFS v2 | block.c + minifs.h/c + mkfs_minifs.py | ✅ 完成（2026-06-15） | 8 MiB、256 inode、10 直接块 + 一级间接块、64 KiB、目录、创建删除、seek、16 fd/进程 |
+| ELF 用户空间 | user.c + user/ + syscall.c/h | ✅ 完成（2026-06-15） | ELF64 `ET_EXEC`、`PT_LOAD`、R/W/X Sv39、argv/envp 栈、简化 libc、C Shell 与外部命令 |
 
 ### 未完成的扩展
 

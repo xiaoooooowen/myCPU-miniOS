@@ -72,3 +72,12 @@ target_link_libraries(unit_test common_library GTest::gtest_main)
 # 配置 GoogleTest
 include(GoogleTest)
 gtest_discover_tests(unit_test)
+
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME mkfs_minifs
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_mkfs_minifs.py
+    )
+endif()

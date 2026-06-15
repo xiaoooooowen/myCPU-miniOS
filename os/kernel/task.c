@@ -171,6 +171,8 @@ static int switch_from_trap(uint64_t *tf, int force) {
 
 void task_init(void) {
     for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].state != TASK_UNUSED && tasks[i].pid >= 0)
+            minifs_close_all(tasks[i].pid);
         tasks[i].state = TASK_UNUSED;
         tasks[i].pid = -1;
         tasks[i].ppid = -1;
@@ -199,6 +201,7 @@ void task_init(void) {
     tasks[0].cwd_inode = MINIFS_ROOT_INODE;
     copy_name(tasks[0].name, "idle");
     current = &tasks[0];
+    minifs_process_init(0);
 
 #if MINIOS_BOOT_DIAGNOSTICS
     printk("Process subsystem initialized: policy=%s quantum=%d tick(s)\n",
@@ -252,6 +255,13 @@ int task_create(void (*entry)(void), const char *name) {
     task->trap_ctx.status = trap_status_read() | SSTATUS_SPP | SSTATUS_SPIE;
     task->trap_ctx.satp = csr_read(satp);
     task_count++;
+    if (minifs_process_init(task->pid) < 0) {
+        kfree(stack);
+        task->stack = NULL;
+        task->state = TASK_UNUSED;
+        task_count--;
+        return -1;
+    }
 
 #if MINIOS_BOOT_DIAGNOSTICS
     printk("Created process '%s' pid=%d ppid=%d stack=%lx entry=%lx\n",
@@ -308,6 +318,14 @@ int task_fork_from_trap(uint64_t *tf, uint64_t child_epc,
     child->trap_ctx.status = trap_status_read() & ~SSTATUS_SPP;
     child->trap_ctx.satp = address_space->satp;
     task_count++;
+    if (minifs_process_fork(current->pid, child->pid) < 0) {
+        child->has_user_space = 0;
+        kfree(kernel_stack);
+        child->stack = NULL;
+        child->state = TASK_UNUSED;
+        task_count--;
+        return -1;
+    }
 #if MINIOS_BOOT_DIAGNOSTICS
     printk("fork: parent=%d child=%d (independent satp=%lx)\n",
            current->pid, child->pid, child->trap_ctx.satp);
@@ -325,10 +343,34 @@ int task_attach_address_space(const struct task_address_space *address_space) {
     return 0;
 }
 
+int task_replace_address_space(const struct task_address_space *address_space,
+                               struct task_address_space *old_space) {
+    if (current == NULL || address_space == NULL || old_space == NULL ||
+        !current->has_user_space)
+        return -1;
+    *old_space = current->address_space;
+    current->address_space = *address_space;
+    current->trap_ctx.satp = address_space->satp;
+    return 0;
+}
+
 struct task_address_space *task_current_address_space(void) {
     if (current == NULL || !current->has_user_space)
         return NULL;
     return &current->address_space;
+}
+
+uint64_t *task_current_initial_trap_context(void) {
+    return current == NULL ? NULL : current->trap_ctx.regs;
+}
+
+void task_set_current_entry(uint64_t entry) {
+    if (current != NULL)
+        current->trap_ctx.epc = entry;
+}
+
+uint64_t task_current_entry(void) {
+    return current == NULL ? 0 : current->trap_ctx.epc;
 }
 
 void yield(void) {
@@ -608,6 +650,24 @@ void task_dump_processes(void) {
            (long)max_switch_ticks, (long)TIMER_TICKS_PER_MS,
            (long)switch_samples);
 #endif
+}
+
+int task_get_processes(struct task_info *entries, int capacity) {
+    if (entries == NULL || capacity < 0)
+        return -1;
+    int count = 0;
+    for (int i = 0; i < MAX_TASKS && count < capacity; i++) {
+        if (tasks[i].state == TASK_UNUSED)
+            continue;
+        entries[count].pid = tasks[i].pid;
+        entries[count].ppid = tasks[i].ppid;
+        entries[count].state = tasks[i].state;
+        entries[count].runtime_ticks = tasks[i].runtime_ticks;
+        entries[count].context_switches = tasks[i].context_switches;
+        copy_name(entries[count].name, tasks[i].name);
+        count++;
+    }
+    return count;
 }
 
 static void dump_tree_node(int pid, int depth) {

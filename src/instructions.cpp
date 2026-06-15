@@ -422,9 +422,10 @@ std::optional<uint64_t> executeAdd(Cpu& cpu, uint32_t inst) {
 
 std::optional<uint64_t> executeLui(Cpu& cpu, uint32_t inst) {
   auto [rd, rs1, rs2] = unpackInstruction(inst);
-  auto immediate = static_cast<uint64_t>(inst & 0xfffff000);  // Extract the upper 20 bits
+  auto immediate = static_cast<int64_t>(
+      static_cast<int32_t>(inst & 0xfffff000));
   TRACE_LOG("LUI: x", rd , " = ", immediate);
-  cpu.regs[rd] = immediate;
+  cpu.regs[rd] = static_cast<uint64_t>(immediate);
   return cpu.update_pc();
 }
 

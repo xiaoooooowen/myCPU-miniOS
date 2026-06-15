@@ -17,6 +17,7 @@ class BlockDevice {
  private:
   void execute(uint32_t command);
   void flush();
+  void flush_sector(std::size_t offset);
 
   std::vector<uint8_t> storage;
   std::vector<uint8_t> window;

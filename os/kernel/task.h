@@ -8,6 +8,7 @@
 #define TASK_REG_COUNT 32
 #define TASK_DEFAULT_QUANTUM 1
 #define TASK_WAIT_BLOCKED (-2)
+#define USER_MAX_PAGES 64
 
 /* 任务状态 */
 enum task_state {
@@ -58,12 +59,18 @@ struct trap_context {
     uint64_t satp;
 };
 
+struct user_page_mapping {
+    uint64_t va;
+    void *page;
+    uint64_t flags;
+};
+
 struct task_address_space {
     void *root;
     void *l1_mmio;
     void *l0_user;
-    void *text_page;
-    void *stack_page;
+    struct user_page_mapping pages[USER_MAX_PAGES];
+    uint32_t page_count;
     uint64_t satp;
 };
 
@@ -90,6 +97,15 @@ struct task {
     char           name[TASK_NAME_LEN];
 };
 
+struct task_info {
+    int pid;
+    int ppid;
+    int state;
+    uint64_t runtime_ticks;
+    uint64_t context_switches;
+    char name[TASK_NAME_LEN];
+};
+
 /* 初始化任务子系统 */
 void task_init(void);
 
@@ -98,7 +114,12 @@ int  task_create(void (*entry)(void), const char *name);
 int  task_fork_from_trap(uint64_t *trap_frame, uint64_t child_epc,
                          const struct task_address_space *address_space);
 int  task_attach_address_space(const struct task_address_space *address_space);
+int  task_replace_address_space(const struct task_address_space *address_space,
+                                struct task_address_space *old_space);
 struct task_address_space *task_current_address_space(void);
+uint64_t *task_current_initial_trap_context(void);
+void task_set_current_entry(uint64_t entry);
+uint64_t task_current_entry(void);
 
 /* 协作式让出 CPU */
 void yield(void);
@@ -139,5 +160,6 @@ void task_set_quantum(unsigned int ticks);
 unsigned int task_get_quantum(void);
 void task_dump_processes(void);
 void task_dump_tree(void);
+int task_get_processes(struct task_info *entries, int capacity);
 
 #endif /* MINIOS_TASK_H */

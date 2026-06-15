@@ -45,7 +45,7 @@ BlockDevice::BlockDevice(const std::string& image_path)
 
   if (std::filesystem::exists(path)) {
     if (std::filesystem::file_size(path) != storage.size())
-      throw std::runtime_error("disk image must be exactly 1 MiB");
+      throw std::runtime_error("disk image must be exactly 8 MiB");
     std::ifstream input(path, std::ios::binary);
     input.read(reinterpret_cast<char*>(storage.data()),
                static_cast<std::streamsize>(storage.size()));
@@ -112,7 +112,7 @@ void BlockDevice::execute(uint32_t command) {
     status = STATUS_READY;
   } else if (command == CMD_WRITE) {
     std::copy_n(window.begin(), BLOCK_SECTOR_SIZE, storage.begin() + offset);
-    flush();
+    flush_sector(offset);
     status = STATUS_READY;
   } else {
     status = STATUS_ERROR;
@@ -128,6 +128,18 @@ void BlockDevice::flush() {
   output.flush();
   if (!output)
     throw std::runtime_error("failed to write disk image");
+}
+
+void BlockDevice::flush_sector(std::size_t offset) {
+  if (path.empty())
+    return;
+  std::fstream output(path, std::ios::binary | std::ios::in | std::ios::out);
+  output.seekp(static_cast<std::streamoff>(offset));
+  output.write(reinterpret_cast<const char*>(storage.data() + offset),
+               BLOCK_SECTOR_SIZE);
+  output.flush();
+  if (!output)
+    throw std::runtime_error("failed to write disk image sector");
 }
 
 }  // namespace cemu

@@ -158,6 +158,15 @@ TEST(RVTests, TestLui) {
   EXPECT_EQ(cpu.getRegValueByName("a0").value(), 42 << 12) << "Error: a0 should be the result of LUI instruction";
 }
 
+TEST(RVTests, TestLuiSignExtendsOnRv64) {
+  std::string code = start +
+      "lui a0, 0xfffff \n";
+  Cpu cpu = rv_helper(code, "test_lui_sign_extend", 1);
+
+  EXPECT_EQ(cpu.getRegValueByName("a0").value(), 0xfffffffffffff000ULL)
+      << "RV64 LUI must sign-extend bit 31";
+}
+
 TEST(RVTests, TestAUIPC) {
   std::string code = start +
       "auipc a0, 42 \n";      // Load 15 into x2
