@@ -209,23 +209,60 @@ static int wait_for(int pid) {
     return result < 0 ? 1 : status;
 }
 
+static void print_error(const char *message) {
+    term_style_begin(ANSI_RED);
+    puts(message);
+    term_style_end();
+}
+
+static void print_help_heading(const char *heading) {
+    term_style_begin(ANSI_BOLD);
+    puts(heading);
+    term_style_end();
+}
+
 static void print_help(void) {
-    puts("builtins: help cd exit exec run");
-    puts("external: ls cat echo pwd ps kill env mkdir rm touch write");
-    puts("syntax: COMMAND [ARGS] [< FILE] [> FILE|>> FILE] [&]");
+    print_help_heading("Built-in commands");
+    puts("  help                 show this help");
+    puts("  cd PATH              change directory");
+    puts("  exit [STATUS]        leave the shell");
+    puts("  exec PROGRAM [ARGS]  replace the shell");
+    puts("  run PROGRAM [ARGS]   run a program");
+    puts("");
+    print_help_heading("External commands");
+    puts("  ls [PATH]            list files");
+    puts("  cat FILE             print a file");
+    puts("  echo [TEXT]          print text");
+    puts("  pwd                  print current directory");
+    puts("  ps                   show processes");
+    puts("  kill [-9|-15] PID    terminate a process");
+    puts("  env                  show environment");
+    puts("  mkdir PATH           create a directory");
+    puts("  rm PATH              remove a file or empty directory");
+    puts("  touch FILE           create a file");
+    puts("  write FILE TEXT      replace file contents");
+    puts("");
+    print_help_heading("Syntax");
+    puts("  COMMAND [ARGS] [< FILE] [> FILE|>> FILE] [&]");
 }
 
 static void print_prompt(void) {
     char cwd[256];
+    term_write_styled(ANSI_BOLD_CYAN, "minios");
+    write(1, ":", 1);
     if (getcwd(cwd, sizeof(cwd)) < 0) {
-        write(1, "minios:?> ", 10);
+        term_write_styled(ANSI_RED, "?");
+        term_write_styled(ANSI_GREEN, ">");
+        write(1, " ", 1);
         return;
     }
-    write(1, "minios:", 7);
+    term_style_begin(ANSI_BLUE);
     write(1, cwd, strlen(cwd));
     if (strcmp(cwd, "/") != 0)
         write(1, "/", 1);
-    write(1, "> ", 2);
+    term_style_end();
+    term_write_styled(ANSI_GREEN, ">");
+    write(1, " ", 1);
 }
 
 int main(int argc, char **argv, char **initial_envp) {
@@ -242,7 +279,7 @@ int main(int argc, char **argv, char **initial_envp) {
         if (parsed > 0)
             continue;
         if (parsed < 0) {
-            puts("shell: parse error");
+            print_error("shell: parse error");
             continue;
         }
         if (strcmp(shell_command.argv[0], "help") == 0) {
@@ -252,7 +289,7 @@ int main(int argc, char **argv, char **initial_envp) {
         if (strcmp(shell_command.argv[0], "cd") == 0) {
             if (shell_command.argc != 2 ||
                 chdir(shell_command.argv[1]) < 0)
-                puts("cd: failed");
+                print_error("cd: failed");
             continue;
         }
         if (strcmp(shell_command.argv[0], "exit") == 0)
@@ -264,7 +301,7 @@ int main(int argc, char **argv, char **initial_envp) {
         char **program_argv =
             shell_command.argv + (direct_exec || run_alias);
         if ((direct_exec || run_alias) && program_argv[0] == 0) {
-            puts("shell: missing program");
+            print_error("shell: missing program");
             continue;
         }
         char pwd_entry[260];
@@ -288,27 +325,31 @@ int main(int argc, char **argv, char **initial_envp) {
                     dup2(15, 1);
                     close(15);
                 }
-                puts("exec: program not found");
+                print_error("exec: program not found");
             }
             continue;
         }
         int pid = fork();
         if (pid < 0) {
-            puts("shell: fork failed");
+            print_error("shell: fork failed");
             continue;
         }
         if (pid == 0) {
             if (apply_redirections(&shell_command) < 0) {
-                puts("shell: redirection failed");
+                print_error("shell: redirection failed");
                 exit(126);
             }
             if (try_exec(program_argv, envp) < 0) {
+                term_style_begin(ANSI_RED);
                 printf("%s: program not found\n", program_argv[0]);
+                term_style_end();
                 exit(127);
             }
         }
         if (shell_command.background) {
+            term_style_begin(ANSI_CYAN);
             printf("[pid %d]\n", pid);
+            term_style_end();
             continue;
         }
         wait_for(pid);

@@ -197,6 +197,22 @@ int puts(const char *string) {
     return 0;
 }
 
+void term_style_begin(const char *style) {
+    if (style != 0 && style[0] != '\0')
+        write(1, style, strlen(style));
+}
+
+void term_style_end(void) {
+    if (ANSI_RESET[0] != '\0')
+        write(1, ANSI_RESET, strlen(ANSI_RESET));
+}
+
+void term_write_styled(const char *style, const char *text) {
+    term_style_begin(style);
+    write(1, text, strlen(text));
+    term_style_end();
+}
+
 static void print_unsigned(uint64_t value, unsigned base, int *written) {
     char digits[32];
     int count = 0;

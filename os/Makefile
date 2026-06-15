@@ -13,6 +13,7 @@ LDFLAGS = -T linker.ld -nostdlib
 USER_CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
 	-ffreestanding -fno-builtin -fno-pic -msmall-data-limit=0 \
 	-nostdlib -nostartfiles -Os -Iuser/include
+USER_CFLAGS += -DMINIOS_BOOT_COLOR=$(BOOT_COLOR)
 USER_LDFLAGS = -T user/user.ld -nostdlib -nostartfiles -static \
 	-Wl,--no-relax,--build-id=none,-s
 

@@ -4,6 +4,32 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef MINIOS_BOOT_COLOR
+#define MINIOS_BOOT_COLOR 1
+#endif
+
+#if MINIOS_BOOT_COLOR
+#define ANSI_RESET     "\033[0m"
+#define ANSI_BOLD      "\033[1m"
+#define ANSI_RED       "\033[31m"
+#define ANSI_GREEN     "\033[32m"
+#define ANSI_YELLOW    "\033[33m"
+#define ANSI_BLUE      "\033[34m"
+#define ANSI_CYAN      "\033[36m"
+#define ANSI_GRAY      "\033[2;37m"
+#define ANSI_BOLD_CYAN "\033[1;36m"
+#else
+#define ANSI_RESET     ""
+#define ANSI_BOLD      ""
+#define ANSI_RED       ""
+#define ANSI_GREEN     ""
+#define ANSI_YELLOW    ""
+#define ANSI_BLUE      ""
+#define ANSI_CYAN      ""
+#define ANSI_GRAY      ""
+#define ANSI_BOLD_CYAN ""
+#endif
+
 #define O_RDONLY 0x000
 #define O_WRONLY 0x001
 #define O_RDWR   0x002
@@ -67,5 +93,8 @@ char *getenv_from(char *const envp[], const char *name);
 int putchar(int character);
 int puts(const char *string);
 int printf(const char *format, ...);
+void term_style_begin(const char *style);
+void term_style_end(void);
+void term_write_styled(const char *style, const char *text);
 
 #endif

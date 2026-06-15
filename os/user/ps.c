@@ -5,6 +5,21 @@ static const char *state_name(int state) {
     return state >= 0 && state <= 4 ? names[state] : "UNKNOWN";
 }
 
+static const char *state_style(int state) {
+    switch (state) {
+        case 1:
+            return ANSI_CYAN;
+        case 2:
+            return ANSI_GREEN;
+        case 3:
+            return ANSI_YELLOW;
+        case 4:
+            return ANSI_RED;
+        default:
+            return ANSI_GRAY;
+    }
+}
+
 static int unsigned_width(uint64_t value) {
     int width = 1;
     while (value >= 10) {
@@ -43,11 +58,15 @@ int main(void) {
     int count = getprocs(entries, 16);
     if (count < 0)
         return 1;
+    term_style_begin(ANSI_BOLD);
     puts("PID   PPID  STATE     TICKS     SWITCH    NAME");
+    term_style_end();
     for (int i = 0; i < count; i++) {
         print_int_column(entries[i].pid, 6);
         print_int_column(entries[i].ppid, 6);
+        term_style_begin(state_style(entries[i].state));
         print_string_column(state_name(entries[i].state), 10);
+        term_style_end();
         print_uint_column(entries[i].runtime_ticks, 10);
         print_uint_column(entries[i].context_switches, 10);
         printf("%s\n", entries[i].name);

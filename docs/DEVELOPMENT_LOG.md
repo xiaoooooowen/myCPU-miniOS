@@ -5,6 +5,32 @@
 
 ***
 
+## 2026-06-15 — Shell 专业简洁配色
+
+### 目标
+
+统一启动界面和用户 Shell 的视觉语言，在不改变命令语义的前提下提升可读性，并让 `BOOT_COLOR=0` 同时覆盖内核与用户 ELF。
+
+### 实现
+
+- `BOOT_COLOR` 通过 `USER_CFLAGS` 传给全部用户程序。
+- 用户 libc 新增统一 ANSI 样式常量及 `term_style_begin`、`term_style_end`、`term_write_styled`。
+- Shell 提示符使用粗体青色系统名、蓝色 cwd 和绿色 `>`；cwd 获取失败时以红色 `?` 标记。
+- `help` 改为 Built-in commands、External commands、Syntax 三组对齐布局。
+- Shell 解析、`cd`、fork、exec、程序查找和重定向错误统一为红色，后台 PID 使用青色。
+- `ls` 使用蓝色目录和绿色可执行文件，继续保留 `/` 与 `*` 类型标记。
+- `ps` 表头加粗，并分别用青、绿、黄、红、灰表示 READY、RUNNING、BLOCKED、ZOMBIE 和其他状态。
+- 每个着色区段结束后立即输出 reset，避免颜色泄漏到后续用户程序或宿主终端。
+
+### 验证
+
+- 彩色临时磁盘验证提示符、分组帮助、`ls /bin`、`ps`、后台 `spin` 和三类错误输出。
+- `make clean && make BOOT_COLOR=0` 后，启动与 Shell 完整输出中不存在 ANSI ESC 字节，文本布局保持不变。
+- 恢复默认彩色构建后，CEMU CTest 97/97 通过。
+- 所有集成验证均使用 `build/` 下临时磁盘，没有覆盖正式 `disk.img`。
+
+***
+
 ## 2026-06-15 — Shell 路径提示符与进程表显示优化
 
 ### 交互改进

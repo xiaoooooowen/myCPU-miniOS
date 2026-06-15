@@ -20,6 +20,7 @@ make run
 - `make disk FORCE=1`：重新格式化并覆盖旧镜像。
 - `make run`：缺少磁盘时自动执行 `mkfs`，然后显式挂载 `os/disk.img`。
 - `make clean`：保留 `disk.img`；`make distclean` 才删除磁盘。
+- `make clean && make BOOT_COLOR=0`：同时禁用内核和用户程序的 ANSI 颜色。
 
 ## MiniFS v2
 
@@ -101,7 +102,19 @@ Shell 内建命令为 `help`、`cd`、`exit`、`exec` 和兼容命令 `run`。
 其他命令都通过 `PATH=/bin:/tests` 搜索，并使用 `fork + execve`
 执行。末尾 `&` 启动后台进程。提示符显示规范化的当前目录，例如
 `minios:/>` 和 `minios:/tmp/demo/>`；目录参数既可写作 `demo`，也可
-写作 `demo/`。`ps` 使用固定列宽输出，便于观察后台任务状态。
+写作 `demo/`。`help` 按内建命令、外部命令和语法分组；`ls` 区分
+目录与可执行文件；`ps` 使用固定列宽和状态颜色。错误消息为红色，
+后台 PID 为青色。
+
+默认 ANSI 配色由 `BOOT_COLOR=1` 控制。纯文本终端使用
+`make clean && make BOOT_COLOR=0`，此时内核、Shell、`ls` 和 `ps`
+均不输出转义序列。用户 ELF 发生变化后，需要重新生成磁盘镜像才能
+在运行时看到新界面；重建正式镜像前应先备份持久数据：
+
+```bash
+cp disk.img disk.img.bak
+make disk FORCE=1
+```
 
 ## 验证
 
