@@ -77,25 +77,25 @@ struct task_address_space {
 
 /* 进程控制块（PCB）。 */
 struct task {
-    struct context ctx;             /* callee-saved 上下文 */
-    struct trap_context trap_ctx;   /* 抢占/异常时的完整上下文 */
+    struct context ctx;             /* callee-saved 上下文（switch_to 切换用） */
+    struct trap_context trap_ctx;   /* 抢占/异常时的完整上下文（trap 路径） */
     void          *stack;           /* 内核栈基址 (kalloc 分配的页) */
-    int            state;           /* 任务状态 */
-    int            pid;
-    int            ppid;
-    int            exit_code;
-    int            wait_target;
-    const void    *wait_channel;
-    unsigned int   time_slice;
-    unsigned int   ticks_left;
-    uint64_t       created_order;
-    uint64_t       ready_order;
-    uint64_t       runtime_ticks;
-    uint64_t       context_switches;
-    uint32_t       cwd_inode;
-    int            has_user_space;
-    struct task_address_space address_space;
-    char           name[TASK_NAME_LEN];
+    int            state;           /* 任务状态：UNUSED/READY/RUNNING/BLOCKED/ZOMBIE */
+    int            pid;             /* 进程 ID */
+    int            ppid;            /* 父进程 ID */
+    int            exit_code;       /* 退出码（ZOMBIE 时保留，供父进程 wait 读取） */
+    int            wait_target;     /* 等待目标进程的 pid，-1 表示等待任意子进程 */
+    const void    *wait_channel;    /* 阻塞等待的信道地址（用于同步/wake 机制） */
+    unsigned int   time_slice;      /* 时间片大小（定时器 tick 数） */
+    unsigned int   ticks_left;      /* 本轮剩余 tick 数，减到 0 触发抢占 */
+    uint64_t       created_order;   /* 创建顺序（用于 FCFS 调度时确定优先级） */
+    uint64_t       ready_order;     /* 就绪顺序（每次就绪时更新，按创建时间排序） */
+    uint64_t       runtime_ticks;   /* 累计运行 tick 数 */
+    uint64_t       context_switches;/* 累计上下文切换次数 */
+    uint32_t       cwd_inode;       /* 当前工作目录的 inode 号 */
+    int            has_user_space;  /* 是否拥有用户地址空间（内核线程为 0） */
+    struct task_address_space address_space; /* 用户地址空间（页表、映射信息） */
+    char           name[TASK_NAME_LEN];      /* 进程名（用于调试/ps 查看） */
 };
 
 struct task_info {
