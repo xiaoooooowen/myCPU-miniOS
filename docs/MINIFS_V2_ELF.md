@@ -3,6 +3,23 @@
 MiniOS 当前使用 8 MiB 持久化磁盘、MiniFS v2 和独立编译的 RV64I
 用户 ELF。Shell、命令和测试程序不再作为内核汇编镜像内嵌。
 
+> 2026-06-20 启动布局更新：MiniOS 已启用独立 Bootloader。模拟器只加载
+> `build/boot.bin`，Bootloader 从 `disk.img` 尾部读取、校验并搬运
+> `kernel.bin` 到 `0x80200000`。完整设计见 [BOOTLOADER.md](BOOTLOADER.md)。
+
+当前 8 MiB 磁盘布局为：
+
+| 区域 | 扇区 |
+|---|---:|
+| MiniFS 超级块、位图和 inode | 0-37 |
+| MiniFS 数据区 | 38-15359 |
+| Bootloader 内核槽 | 15360-16383 |
+
+`make` 会构建 `boot.bin`、`kernel.bin` 和用户 ELF；`make disk` 创建文件系统
+并安装内核；`make install-kernel` 只更新内核槽；`make run` 在保留用户文件的
+前提下刷新内核槽，再从 `boot.bin` 启动。下文中将 MiniFS 数据区写为
+`38-16383` 的旧说明已被本段替代。
+
 ## 构建与运行
 
 ```bash
@@ -126,7 +143,7 @@ make clean && make BOOT_DIAGNOSTICS=1
 make clean && make BOOT_COLOR=0
 ```
 
-已验证 97 个 CTest 测试、精确 64 KiB 文件与间接块、超过 128 个
+已验证 98 个 CTest 测试、精确 64 KiB 文件与间接块、超过 128 个
 文件、三级以上目录、ELF 参数和环境、fork/exec/wait、重定向及跨
 模拟器重启持久化。
 

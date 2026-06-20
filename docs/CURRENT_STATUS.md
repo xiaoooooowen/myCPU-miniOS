@@ -1,9 +1,47 @@
 # MiniOS / myCPU 项目当前状态
 
-> 冻结时间：2026-06-15
+> 冻结时间：2026-06-20
 > 冻结版本：MiniFS v2 + ELF64 用户程序 + C Shell
 >
 > 详细架构与使用方式见 [MINIFS_V2_ELF.md](MINIFS_V2_ELF.md)。本文后部保留的早期阶段记录仅用于历史回顾；v1 MiniFS 和内嵌 `user_entry.S` 方案已被 v2 取代。
+
+## 2026-06-20 最终冻结：独立 Bootloader 完成
+
+- 启动链路已改为 `boot.bin -> 块设备 -> kernel.bin -> kernel_main`。
+- 模拟器只将 1513 B 的 `boot.bin` 预装到 `0x80000000`。
+- M 态 Bootloader 自主读取磁盘扇区 15360 起的内核镜像，验证 64 B
+  镜像头、大小、加载地址、入口和 32 位校验和。
+- 内核加载到 `0x80200000`，校验成功后跳转；损坏镜像会被拒绝。
+- 2026-06-20 全量回归为 98/98，通过正式磁盘启动、Shell 退出和损坏镜像测试。
+
+最终启动路径：
+
+```text
+cemu 仅加载 boot.bin 到 0x80000000
+  -> Bootloader 从 disk.img 尾部读取 kernel.bin
+  -> 校验并搬运到 0x80200000
+  -> 跳转内核 _start，完成 M 到 S 切换
+  -> kernel_main -> MiniFS -> 用户 Shell
+```
+
+新增或调整的正式产物：
+
+- `os/build/boot.bin`：模拟器复位后执行的第一阶段加载器。
+- `os/build/kernel.bin`：不再由模拟器直接加载，由 Bootloader 从磁盘加载。
+- `os/disk.img`：前 15360 扇区为 MiniFS，后 1024 扇区为内核槽。
+- `os/disk.img.pre-bootloader.bak`：正式磁盘迁移前备份。
+
+日常命令：
+
+```bash
+cd os
+make
+make install-kernel
+make run
+```
+
+详细格式、布局、迁移与验证见 [BOOTLOADER.md](BOOTLOADER.md)。下文早于
+2026-06-20 的单阶段加载地址、97 项测试和磁盘全容量说明仅作为历史记录。
 
 ## 一、环境信息
 
@@ -57,12 +95,14 @@ make run
 - `build_wsl/cemu` — 模拟器可执行文件
 - `build_wsl/unit_test` — 单元测试可执行文件
 - `build_wsl/libcommon_library.a` — 公共库
-- `os/build/kernel.bin` — MiniOS 裸机二进制
-- `os/build/kernel.elf` — MiniOS ELF 文件（含调试符号）
+- `os/build/boot.bin` — 第一阶段 M 态 Bootloader（模拟器唯一预装）
+- `os/build/boot.elf` — Bootloader ELF（含调试符号）
+- `os/build/kernel.bin` — MiniOS 裸机二进制（由 Bootloader 从磁盘加载）
+- `os/build/kernel.elf` — MiniOS ELF 文件（含调试符号，链接到 0x80200000）
 - `os/build/rootfs/` — 写入磁盘前的用户 ELF 与根目录 staging
-- `os/disk.img` — 8 MiB MiniFS v2 持久化磁盘镜像
+- `os/disk.img` — 8 MiB MiniFS v2 持久化磁盘镜像（前 15360 扇区文件系统 + 后 1024 扇区内核槽）
 
-## 三、测试结果（2026-06-15 运行）
+## 三、测试结果（2026-06-20 运行）
 
 ### 测试总览
 
@@ -79,8 +119,9 @@ make run
 | CLINT 测试 (ClintTest) | 4 | 4 | 0 | 0 |
 | UART 测试 (UartTest) | 5 | 5 | 0 | 0 |
 | MMU 测试 (MmuTest) | 13 | 13 | 0 | 0 |
+| 内核安装测试 | 1 | 1 | 0 | 0 |
 | mkfs MiniFS 测试 | 1 | 1 | 0 | 0 |
-| **合计** | **97** | **97** | **0** | **0** |
+| **合计** | **98** | **98** | **0** | **0** |
 
 ### MiniOS 运行验证
 
@@ -165,11 +206,15 @@ minios:/> _
 | MiniFS v2 | block.c + minifs.h/c + mkfs_minifs.py | ✅ 完成（2026-06-15） | 8 MiB、256 inode、10 直接块 + 一级间接块、64 KiB、目录、创建删除、seek、16 fd/进程、close-on-exec |
 | ELF 用户空间 | user.c + user/ + syscall.c/h | ✅ 完成（2026-06-15） | ELF64 `ET_EXEC`、非空 `PT_LOAD`、R/W/X Sv39、argv/envp 栈、简化 libc、C Shell 与外部命令 |
 
-### 未完成的扩展
+### 未实现的扩展
 
 | 模块 | 状态 |
 |------|------|
-| 通用 ELF 文件解析器与外部程序加载 | ❌ 未开始（当前 exec 解析 MiniFS 可执行 inode，再加载内核内置映像） |
+| 动态链接与重定位 | ❌ 未开始（当前所有用户程序均为静态 RV64I ELF） |
+| UART 接收中断驱动（当前为轮询） | ❌ 未开始（不影响功能，当前 sys_read 已可用） |
+| 内核缺页异常处理与按需分页 | ❌ 未开始（当前使用固定预映射策略） |
+| Shell 管道 | ❌ 未开始（重定向 `< > >>` 已支持） |
+| 多核支持 | ❌ 未开始（单核 RV64I） |
 
 ## 五、指令集覆盖
 
@@ -387,7 +432,7 @@ minios:/> _
 | IDE/LSP 报告 RISC-V 内联汇编寄存器名未知（`a0`/`a1`/`a7`） | 低 | ✅ 已修复 — 宿主 x86 语言服务器不认识 RISC-V 寄存器名，用 `#ifdef __riscv` 包裹内联汇编，`#else` 分支提供无害替代。不影响交叉编译和运行 |
 | 抢占式调度 sched_tick 未触发任务切换 | 高 | ✅ 已修复（阶段 9 — SIP/MTIP 委托映射修复） |
 | U 模式子进程退出后错误强制 SPP=1，导致 Shell 以 S-mode 返回 | 高 | ✅ 已修复（恢复目标任务保存的 sstatus，不覆盖 SPP） |
-| exec 当前加载内置用户映像，尚未实现通用 ELF 文件解析 | 低 | 不影响进程管理验收，列为后续扩展 |
+| ELF loader 已支持从 MiniFS 加载独立用户 ELF，但动态链接与重定位未实现 | 低 | 当前所有用户程序均为静态 RV64I ELF，不影响课程验收 |
 | MiniFS 不含日志与崩溃恢复 | 中 | 教学版限制；每次块写立即刷新，正常退出和重启场景已验证 |
 
 ## 八、当前文件结构
@@ -398,83 +443,104 @@ mycpu/
 ├── CMakePresets.json
 ├── .gitignore
 ├── docs/
-│   ├── 项目总纲.md
-│   ├── 任务.md
-│   ├── CURRENT_STATUS.md    (本文档)
-│   └── DEVELOPMENT_LOG.md
+│   ├── CURRENT_STATUS.md            (项目当前状态 - 核心参考)
+│   ├── DEVELOPMENT_LOG.md           (开发日志)
+│   ├── BOOTLOADER.md                (独立 Bootloader 设计文档)
+│   ├── MINIFS_V2_ELF.md             (MiniFS v2 与 ELF 用户空间)
+│   ├── 课设题目A要求对照与完成度评估.md
+│   ├── 学习记录.md
+│   ├── 当前架构图.png
+│   ├── 未来总架构图.png
+│   ├── archive/                     (归档：已完成的规划与报告)
+│   │   ├── 项目总纲.md              (原始架构规划)
+│   │   ├── 任务.md                  (阶段 0.5 任务分析)
+│   │   ├── 未来一周开发计划.md       (2026-06-08 周计划)
+│   │   └── 操作系统项目进度报告.md   (2026-06-07 课程报告)
+│   ├── report_assets/
+│   ├── report_render/
+│   └── wiki/
 ├── src/
-│   ├── main.cpp             (入口：加载 bin 与 disk.img，解析 --disk，运行主循环)
-│   ├── param.h              (地址常量、CSR 编号、掩码定义)
-│   ├── log.h                (日志/彩色输出)
-│   ├── cpu.h / cpu.cpp      (CPU 核心：PC、寄存器、fetch/execute 循环)
-│   ├── dram.h / dram.cpp    (128MB 物理内存)
-│   ├── bus.h / bus.cpp      (总线：MMIO 地址路由到 DRAM/UART/CLINT/PLIC/块设备)
-│   ├── block_device.h / .cpp(1 MiB 宿主磁盘：同步扇区读写与持久化刷新)
-│   ├── csr.h / csr.cpp      (控制状态寄存器)
-│   ├── exception.h / .cpp   (异常建模)
-│   ├── instructions.h / .cpp(指令实现 + dispatch table，约 50 条指令)
-│   ├── mmu.h / mmu.cpp       (MMU：Sv39 地址翻译、三级页表遍历、权限检查)
-│   ├── uart.h / uart.cpp    (NS16550A UART 模型)
-│   ├── clint.h / clint.cpp  (CLINT 定时器模型)
-│   └── plic.h / plic.cpp    (PLIC 中断控制器模型)
+│   ├── main.cpp                    (入口：仅加载 boot.bin，运行主循环)
+│   ├── param.h                     (地址常量、CSR 编号、掩码定义)
+│   ├── log.h                       (日志/彩色输出)
+│   ├── cpu.h / cpu.cpp             (CPU 核心：PC、寄存器、fetch/execute 循环)
+│   ├── dram.h / dram.cpp           (128MB 物理内存)
+│   ├── bus.h / bus.cpp             (总线：MMIO 地址路由到 DRAM/UART/CLINT/PLIC/块设备/TEST_FINISH)
+│   ├── block_device.h / .cpp       (8 MiB 宿主磁盘：同步扇区读写与持久化刷新)
+│   ├── csr.h / csr.cpp             (控制状态寄存器)
+│   ├── exception.h / .cpp          (异常建模)
+│   ├── instructions.h / .cpp       (指令实现 + dispatch table，约 50 条指令)
+│   ├── mmu.h / mmu.cpp             (MMU：Sv39 地址翻译、三级页表遍历、权限检查)
+│   ├── uart.h / uart.cpp           (NS16550A UART 模型)
+│   ├── clint.h / clint.cpp         (CLINT 定时器模型)
+│   └── plic.h / plic.cpp           (PLIC 中断控制器模型)
 ├── os/
-│   ├── Makefile             (交叉编译：riscv64-unknown-elf-gcc)
-│   ├── linker.ld            (链接脚本：OUTPUT_ARCH(riscv), 0x80000000)
+│   ├── Makefile                    (交叉编译：riscv64-unknown-elf-gcc)
+│   ├── linker.ld                   (内核链接脚本：0x80200000)
 │   ├── boot/
-│   │   └── start.S          (启动汇编：设栈、清零 BSS、配置 medeleg/mideleg/stvec、mret 切换到 S 模式 → kernel_main)
+│   │   ├── loader_start.S          (M 态 Bootloader 入口)
+│   │   ├── loader.c                (块设备读取、校验、搬运内核)
+│   │   └── loader.ld               (Bootloader 链接脚本)
 │   ├── kernel/
-│   │   ├── kernel.c         (结构化启动、可选诊断、MiniFS 初始化与 Shell 生命周期)
-│   │   ├── uart.h           (UART 驱动头文件)
-│   │   ├── uart.c           (UART 驱动：uart_putc/uart_puts)
-│   │   ├── printk.h         (内核日志头文件)
-│   │   ├── printk.c         (内核日志：%s/%d/%x/%lx/%c/%%，免除法)
-│   │   ├── trap.S           (trap 入口汇编：寄存器保存/恢复 + sret + 传 trap frame 指针)
-│   │   ├── trap.h           (trap handler 头文件)
-│   │   ├── trap.c           (trap handler：接收 trap frame，中断分支调用 sched_tick，trap_silent 模式，S 模式 cause 编码)
-│   │   ├── timer.h          (定时器驱动头文件)
-│   │   ├── timer.c          (定时器驱动：CLINT MMIO 读写 + mtimecmp 设置，S 模式 STIE)
-│   │   ├── mem.h            (物理内存分配器头文件)
-│   │   ├── mem.c            (物理内存分配器：bump+free_list 混合，kalloc/kfree)
-│   │   ├── task.h           (任务管理头文件：PCB、cwd、context、调度与 kill)
-│   │   ├── task.c           (任务管理：调度、fork/exit/waitpid/kill、cwd 继承)
-│   │   ├── switch.S         (上下文切换汇编：switch_to 保存/恢复 callee-saved 寄存器)
-│   │   ├── syscall.h        (系统调用号：进程、文件、目录、路径执行与 kill)
-│   │   ├── syscall.c        (系统调用分派：MiniFS fd、cwd、exec path 与进程控制)
-│   │   ├── user.h           (用户模式头文件：user_init + enter_user)
-│   │   ├── user.c           (用户模式：分配物理页 + 构建用户页表 + 复制用户程序 + sret 切换)
-│   │   ├── user_entry.S     (Shell + spin/fstest/forktest 内置位置无关用户映像)
-│   │   ├── vm.h             (虚拟内存头文件：Sv39 PTE 定义 + vm_init + 全局页表指针导出)
-│   │   ├── vm.c             (虚拟内存：构建身份映射页表 + 开启 SATP + 暴露全局页表指针)
-│   │   ├── ramfs.h / .c     (旧 RAMFS，仅用于诊断回归)
-│   │   ├── block.h / .c     (MiniOS MMIO 块设备驱动)
-│   │   └── minifs.h / .c    (持久化层级文件系统、路径解析、fd 与可执行 inode)
+│   │   ├── kernel.c                (结构化启动、Shell 生命周期、诊断自测)
+│   │   ├── uart.h / uart.c         (UART 驱动：uart_putc/uart_getc)
+│   │   ├── printk.h / printk.c     (内核日志：%s/%d/%x/%lx/%c/%%，免除法)
+│   │   ├── trap.S / trap.h / trap.c(trap 入口/分派/静默模式)
+│   │   ├── timer.h / timer.c       (CLINT 定时器驱动，S 模式 STIE)
+│   │   ├── mem.h / mem.c           (物理内存分配器：bump+free_list)
+│   │   ├── task.h / task.c         (任务管理：PCB/fork/exec/waitpid/kill/cwd)
+│   │   ├── switch.S                (上下文切换汇编)
+│   │   ├── syscall.h / syscall.c   (系统调用分派：进程/文件/目录/路径执行)
+│   │   ├── user.h / user.c         (用户模式：ELF loader、Sv39 地址空间)
+│   │   ├── vm.h / vm.c             (Sv39 内核页表初始化与映射)
+│   │   ├── sync.h / sync.c         (同步原语：信号量、互斥锁)
+│   │   ├── string.c                (内核字符串函数)
+│   │   ├── block.h / block.c       (MiniOS MMIO 块设备驱动)
+│   │   └── minifs.h / minifs.c     (MiniFS v2：256 inode、间接块、持久化)
+│   ├── user/
+│   │   ├── crt0.S                  (用户程序入口：解析 argv/envp → main)
+│   │   ├── include/user.h          (用户 libc 头文件)
+│   │   ├── libc.c                  (简化 libc：printf/malloc/字符串)
+│   │   ├── shell.c                 (C 语言交互式 Shell)
+│   │   ├── ls.c / cat.c / echo.c   (文件与输出命令)
+│   │   ├── pwd.c / cd (内建)       (目录命令)
+│   │   ├── ps.c / kill.c           (进程命令)
+│   │   ├── mkdir.c / rm.c / touch.c / write.c (文件系统命令)
+│   │   ├── env.c                   (环境变量)
+│   │   ├── spin.c / fstest.c / forktest.c / argtest.c (测试程序)
+│   │   └── ... (其他用户命令)
 │   └── include/
-│       └── csr.h            (CSR 访问抽象层)
+│       └── csr.h                   (CSR 访问抽象层)
+├── tools/
+│   ├── mkfs_minifs.py              (从 staging rootfs 创建 MiniFS 磁盘镜像)
+│   └── install_kernel.py           (将内核安装到磁盘尾部内核槽)
 ├── tests/
 │   ├── test_util.h / .cpp
-│   ├── riscv-tests/         (RISC-V 汇编测试用例)
-│   └── unitest/             (C++ 单元测试)
+│   ├── riscv-tests/                (RISC-V 汇编测试用例)
+│   ├── test_install_kernel.py      (内核安装工具测试)
+│   ├── test_mkfs_minifs.py         (mkfs 工具测试)
+│   └── unitest/                    (C++ 单元测试)
 │       ├── cpu_test.cpp
 │       ├── instructions_test.cpp
-│       ├── bus_test.cpp     (含 MMIO 路由测试)
+│       ├── bus_test.cpp            (含 MMIO 路由测试)
 │       ├── dram_test.cpp
 │       ├── uart_test.cpp
 │       ├── clint_test.cpp
 │       ├── plic_test.cpp
 │       ├── csr_test.cpp
-│       ├── mmu_test.cpp      (MMU 单元测试：Bare/Sv39 地址翻译、权限检查、页异常)
+│       ├── mmu_test.cpp
 │       └── exception.cpp
 └── third_party/
     └── googletest/
 ```
 
-# 九、下一步行动
+## 九、下一步行动
 
-| 优先级 | 任务 | 所属阶段 |
-|--------|------|----------|
-| P1 | 代码整洁与稳定收尾 | 收尾 |
-| P1 | 结题报告、PPT与演示材料 | 收尾 |
-| P2 | 通用 ELF loader | 下一阶段 |
+| 优先级 | 任务 | 状态 |
+|--------|------|------|
+| P1 | 结题报告、PPT 与演示视频 | 进行中 |
+| P2 | 代码整洁与注释完善 | 待开始 |
+| P3 | 通用 ELF 文件加载增强（管道、信号等） | 延后（可作为答辩"后续计划"） |
 
 ## 十、本轮关键学习点
 

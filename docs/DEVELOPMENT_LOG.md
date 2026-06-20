@@ -5,6 +5,56 @@
 
 ***
 
+## 2026-06-20 — 独立 Bootloader 与两阶段启动
+
+### 目标
+
+把 MiniOS 从"模拟器预装 kernel.bin"升级为真正的两阶段启动：模拟器只预装 M 态 Bootloader，由 Bootloader 自主从块设备读取、校验、搬运并跳转内核。
+
+### 实现
+
+- 新增 `os/boot/loader_start.S`：M 态 Bootloader 入口汇编（`0x80000000`），设置 Bootloader 栈顶 `0x80200000`，调用 C `boot_main`。
+- 新增 `os/boot/loader.c`：读取磁盘扇区 15360 的 64 B 内核镜像头（magic `MINIKRNL`、version、header_size、load_address、entry、image_size、checksum），校验后从扇区 15361 起逐扇区读取内核裸二进制，逐字节累加 32 位校验和，搬运到 `0x80200000`，校验成功后跳转。
+- 新增 `os/boot/loader.ld`：Bootloader 独立链接脚本。
+- 新增 `os/linker.ld`：内核链接地址改为 `0x80200000`。
+- CEMU main.cpp：改为只预装 `boot.bin`（1513 B）到 `0x80000000`，不再加载 `kernel.bin`。
+- 新增 `tools/install_kernel.py`：将内核安装到磁盘尾部内核槽（扇区 15360-16383），支持旧磁盘无损迁移（超级块容量、数据位图标记）。
+- 新增 `tests/test_install_kernel.py`：内核安装工具测试。
+- MiniFS 超级块 `blocks` 改为 15360，数据位图将尾部 1024 扇区标记为保留。
+- 旧磁盘备份为 `os/disk.img.pre-bootloader.bak`。
+
+### 内核镜像头格式
+
+```text
+offset  size  field
+0x00      8   magic = "MINIKRNL"
+0x08      4   version = 1
+0x0c      4   header_size = 64
+0x10      8   load_address = 0x80200000
+0x18      8   entry = 0x80200000
+0x20      4   image_size
+0x24      4   checksum (32 位累加和)
+0x28     24   reserved
+```
+
+### 验证
+
+- Bootloader ELF 入口：`0x80000000`，Kernel ELF 入口：`0x80200000`。
+- `boot.bin` 大小：1513 B，`kernel.bin` 大小：53360 B。
+- 98/98 CTest 全部通过。
+- 正式 `disk.img` 无损迁移成功，Bootloader → 内核 → Shell 完整链路可运行。
+- Shell `exit` 后内核正常关闭模拟器。
+- 人为损坏内核 1 字节后 Bootloader 输出 `[BOOT] FAIL: checksum mismatch` 拒绝跳转。
+
+### 经验
+
+1. 两阶段启动让模拟器职责最小化，Bootloader 成为客体 RISC-V 代码运行的真实 M 态程序。
+2. 校验和验证保证损坏内核不会被执行——这是嵌入式/OS 启动的安全基线。
+3. Bootloader 栈顶与内核加载地址重合（`0x80200000`），栈向下增长、内核向上加载，互不覆盖。
+4. 磁盘无损迁移需要同时修改超级块、数据位图和实际文件系统元数据，三个层面必须一致。
+
+***
+
 ## 2026-06-15 — Shell 专业简洁配色
 
 ### 目标
