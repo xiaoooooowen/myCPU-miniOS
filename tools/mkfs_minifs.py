@@ -10,8 +10,9 @@ import struct
 import sys
 
 BLOCK_SIZE = 512
-BLOCK_COUNT = 16384
-IMAGE_SIZE = BLOCK_SIZE * BLOCK_COUNT
+DEVICE_BLOCK_COUNT = 16384
+BLOCK_COUNT = 15360
+IMAGE_SIZE = BLOCK_SIZE * DEVICE_BLOCK_COUNT
 MAGIC = 0x4D465332
 VERSION = 2
 MAX_INODES = 256
@@ -38,11 +39,13 @@ class MiniFSBuilder:
     def __init__(self) -> None:
         self.image = bytearray(IMAGE_SIZE)
         self.inode_used = [False] * MAX_INODES
-        self.block_used = [False] * BLOCK_COUNT
+        self.block_used = [False] * DEVICE_BLOCK_COUNT
         self.inodes = [None] * MAX_INODES
         for block in range(DATA_START):
             self.block_used[block] = True
         self.inode_used[0] = True
+        for block in range(BLOCK_COUNT, DEVICE_BLOCK_COUNT):
+            self.block_used[block] = True
         self.inodes[0] = self._new_inode(MODE_DIR, 0)
 
     @staticmethod

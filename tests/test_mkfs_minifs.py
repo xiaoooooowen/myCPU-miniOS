@@ -33,9 +33,10 @@ class MkfsMiniFSTest(unittest.TestCase):
             magic, version, blocks, inodes = struct.unpack_from("<4I", image)
             self.assertEqual(magic, MKFS.MAGIC)
             self.assertEqual(version, 2)
-            self.assertEqual(blocks, 16384)
+            self.assertEqual(blocks, MKFS.BLOCK_COUNT)
             self.assertEqual(inodes, 256)
             self.assertGreater(sum(builder.inode_used), 2)
+            self.assertTrue(all(builder.block_used[MKFS.BLOCK_COUNT:]))
 
     def test_rejects_file_larger_than_64_kib(self):
         builder = MKFS.MiniFSBuilder()

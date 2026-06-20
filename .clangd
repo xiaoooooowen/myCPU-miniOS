@@ -1,0 +1,18 @@
+CompileFlags:
+  Add:
+    - -xc
+    - -std=c11
+    - -ffreestanding
+    - -target
+    - riscv64-unknown-elf
+    - -Ios/user/include
+    - -Ios/kernel
+    - -Ios/include
+    - -Isrc
+    - -I/usr/lib/gcc/riscv64-unknown-elf/13.2.0/include
+    - -I/usr/lib/gcc/riscv64-unknown-elf/13.2.0/include-fixed
+    - -D__riscv
+    - -D__riscv_xlen=64
+    - -DMINIOS_USE_S_MODE
+    - -DMINIOS_BOOT_DIAGNOSTICS=0
+    - -DMINIOS_BOOT_COLOR=1

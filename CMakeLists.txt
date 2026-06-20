@@ -80,4 +80,9 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_mkfs_minifs.py
     )
+    add_test(
+        NAME install_kernel
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_install_kernel.py
+    )
 endif()

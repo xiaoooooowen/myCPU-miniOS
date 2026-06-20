@@ -21,11 +21,11 @@ void request_stop(int) {
 
 int main(int argc, char* argv[]) {
   if (argc != 2 && argc != 4) {
-    LOG(cemu::ERROR, "Usage: cemu <kernel.bin> [--disk <disk.img>]");
+    LOG(cemu::ERROR, "Usage: cemu <boot.bin> [--disk <disk.img>]");
     return 1;
   }
   if (argc == 4 && std::string(argv[2]) != "--disk") {
-    LOG(cemu::ERROR, "Usage: cemu <kernel.bin> [--disk <disk.img>]");
+    LOG(cemu::ERROR, "Usage: cemu <boot.bin> [--disk <disk.img>]");
     return 1;
   }
 

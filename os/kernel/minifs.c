@@ -19,6 +19,7 @@
 #define MINIFS_INODE_TABLE_START 6U
 #define MINIFS_INODE_TABLE_BLOCKS 32U
 #define MINIFS_DATA_START 38U
+#define MINIFS_BLOCK_COUNT 15360U
 
 #define OFD_CONSOLE_IN  1
 #define OFD_CONSOLE_OUT 2
@@ -175,7 +176,7 @@ static void free_inode_number(uint32_t inode) {
 }
 
 static int alloc_data_block(void) {
-    for (uint32_t i = MINIFS_DATA_START; i < BLOCK_SECTOR_COUNT; i++) {
+    for (uint32_t i = MINIFS_DATA_START; i < MINIFS_BLOCK_COUNT; i++) {
         if (!bitmap_test(bitmap_buffer, i)) {
             bitmap_set(bitmap_buffer, i, 1);
             uint32_t bitmap_sector = i / (BLOCK_SECTOR_SIZE * 8U);
@@ -193,7 +194,7 @@ static int alloc_data_block(void) {
 }
 
 static void free_data_block(uint32_t block) {
-    if (block < MINIFS_DATA_START || block >= BLOCK_SECTOR_COUNT)
+    if (block < MINIFS_DATA_START || block >= MINIFS_BLOCK_COUNT)
         return;
     bitmap_set(bitmap_buffer, block, 0);
     uint32_t bitmap_sector = block / (BLOCK_SECTOR_SIZE * 8U);
@@ -502,7 +503,7 @@ int minifs_init(void) {
     struct minifs_super *super = (struct minifs_super *)block_buffer;
     if (super->magic != MINIFS_MAGIC ||
         super->version != MINIFS_VERSION ||
-        super->blocks != BLOCK_SECTOR_COUNT ||
+        super->blocks != MINIFS_BLOCK_COUNT ||
         super->inode_count != MINIFS_MAX_INODES ||
         super->data_start != MINIFS_DATA_START ||
         super->max_file_size != MINIFS_MAX_FILE_SIZE)

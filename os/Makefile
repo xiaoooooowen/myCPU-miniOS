@@ -10,6 +10,10 @@ CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany -ffreestanding -nostdlib 
 CFLAGS += -DMINIOS_BOOT_DIAGNOSTICS=$(BOOT_DIAGNOSTICS)
 CFLAGS += -DMINIOS_BOOT_COLOR=$(BOOT_COLOR)
 LDFLAGS = -T linker.ld -nostdlib
+LOADER_CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
+	-ffreestanding -fno-builtin -fno-pic -msmall-data-limit=0 \
+	-nostdlib -nostartfiles -O2
+LOADER_LDFLAGS = -T boot/loader.ld -nostdlib -Wl,--no-relax,--build-id=none
 USER_CFLAGS = -march=rv64i_zicsr -mabi=lp64 -mcmodel=medany \
 	-ffreestanding -fno-builtin -fno-pic -msmall-data-limit=0 \
 	-nostdlib -nostartfiles -Os -Iuser/include
@@ -24,11 +28,12 @@ ROOTFS_DIR = $(BUILD_DIR)/rootfs
 DISK_IMAGE = disk.img
 CEMU ?= ../build_wsl/cemu
 
-BOOT_SRC = boot/start.S
+KERNEL_ENTRY_SRC = boot/start.S
 KERNEL_SRCS = kernel/kernel.c kernel/uart.c kernel/printk.c kernel/trap.c kernel/timer.c kernel/mem.c kernel/task.c kernel/sync.c kernel/syscall.c kernel/vm.c kernel/user.c kernel/ramfs.c kernel/block.c kernel/minifs.c kernel/string.c
 KERNEL_ASMS = kernel/trap.S kernel/switch.S
 
 OBJS = $(BUILD_DIR)/start.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/uart.o $(BUILD_DIR)/printk.o $(BUILD_DIR)/trap_handler.o $(BUILD_DIR)/trap_entry.o $(BUILD_DIR)/timer.o $(BUILD_DIR)/mem.o $(BUILD_DIR)/task.o $(BUILD_DIR)/sync.o $(BUILD_DIR)/switch.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/vm.o $(BUILD_DIR)/user.o $(BUILD_DIR)/ramfs.o $(BUILD_DIR)/block.o $(BUILD_DIR)/minifs.o $(BUILD_DIR)/string.o
+LOADER_OBJS = $(BUILD_DIR)/loader_start.o $(BUILD_DIR)/loader.o
 
 BIN_PROGRAMS = shell ls cat echo pwd ps kill env mkdir rm touch write
 TEST_PROGRAMS = spin fstest forktest argtest
@@ -36,15 +41,27 @@ USER_COMMON = $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/libc.o
 BIN_TARGETS = $(addprefix $(ROOTFS_DIR)/bin/,$(BIN_PROGRAMS))
 TEST_TARGETS = $(addprefix $(ROOTFS_DIR)/tests/,$(TEST_PROGRAMS))
 
-.PHONY: all users disk run clean distclean dump
+.PHONY: all users disk install-kernel run clean distclean dump
 .SECONDARY: $(addprefix $(USER_BUILD_DIR)/,$(addsuffix .o,$(BIN_PROGRAMS) $(TEST_PROGRAMS)))
 
-all: $(BUILD_DIR)/kernel.bin users
+all: $(BUILD_DIR)/boot.bin $(BUILD_DIR)/kernel.bin users
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/start.o: $(BOOT_SRC) | $(BUILD_DIR)
+$(BUILD_DIR)/loader_start.o: boot/loader_start.S | $(BUILD_DIR)
+	$(CC) $(LOADER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/loader.o: boot/loader.c | $(BUILD_DIR)
+	$(CC) $(LOADER_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/boot.elf: $(LOADER_OBJS) boot/loader.ld
+	$(CC) $(LOADER_CFLAGS) $(LOADER_LDFLAGS) $(LOADER_OBJS) -lgcc -o $@
+
+$(BUILD_DIR)/boot.bin: $(BUILD_DIR)/boot.elf
+	$(OBJCOPY) -O binary $< $@
+
+$(BUILD_DIR)/start.o: $(KERNEL_ENTRY_SRC) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/kernel.o: kernel/kernel.c | $(BUILD_DIR)
@@ -130,14 +147,23 @@ $(ROOTFS_DIR)/tmp: | $(ROOTFS_DIR)/bin $(ROOTFS_DIR)/tests
 
 users: $(BIN_TARGETS) $(TEST_TARGETS) $(ROOTFS_DIR)/README $(ROOTFS_DIR)/tmp
 
-disk: users
+disk: users $(BUILD_DIR)/kernel.bin
 	python3 ../tools/mkfs_minifs.py $(ROOTFS_DIR) $(DISK_IMAGE) $(if $(filter 1,$(FORCE)),--force,)
+	python3 ../tools/install_kernel.py $(DISK_IMAGE) $(BUILD_DIR)/kernel.bin
+
+install-kernel: $(BUILD_DIR)/kernel.bin
+	@test -f $(DISK_IMAGE) || { echo "missing $(DISK_IMAGE); run make disk"; exit 1; }
+	python3 ../tools/install_kernel.py $(DISK_IMAGE) $(BUILD_DIR)/kernel.bin
 
 run: all
-	@if [ ! -f $(DISK_IMAGE) ]; then $(MAKE) disk; fi
-	$(CEMU) $(BUILD_DIR)/kernel.bin --disk $(DISK_IMAGE)
+	@if [ ! -f $(DISK_IMAGE) ]; then $(MAKE) disk; else $(MAKE) install-kernel; fi
+	$(CEMU) $(BUILD_DIR)/boot.bin --disk $(DISK_IMAGE)
 
-dump: $(BUILD_DIR)/kernel.elf
+dump: $(BUILD_DIR)/boot.elf $(BUILD_DIR)/kernel.elf
+	$(OBJDUMP) -h $(BUILD_DIR)/boot.elf
+	@echo ""
+	$(OBJDUMP) -d $(BUILD_DIR)/boot.elf
+	@echo ""
 	$(OBJDUMP) -h $(BUILD_DIR)/kernel.elf
 	@echo ""
 	$(OBJDUMP) -d $(BUILD_DIR)/kernel.elf
