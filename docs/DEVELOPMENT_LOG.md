@@ -5,6 +5,67 @@
 
 ***
 
+## 2026-06-20 — MiniOS 系统级集成测试框架
+
+### 目标
+
+为 MiniOS 建立自动化黑盒集成测试，通过 Python 脚本驱动 cemu 模拟器、与 MiniOS Shell 交互，验证操作系统核心功能。与现有的 CTest 模拟器硬件单元测试互补，形成两层测试覆盖。
+
+### 实现
+
+- 新增 `tests/test_minios_integration.py`：基于 `unittest` 的 Python 测试脚本。
+- `MiniOSRunner` 类封装 cemu 子进程生命周期：`subprocess.Popen` 启动、通过 `stdin` PIPE 发送命令、非阻塞 `select` + `_os.read()` 收集 `stdout` 输出。
+- Shell 提示符 `minios:/> ` 不以换行结尾，`read_until()` 使用 `_seen` 位置追踪，只匹配自上次调用以来的新增输出，避免重复匹配旧数据。
+- 提供 `strip_ansi()` 函数移除 ANSI 转义序列，虽 `BOOT_COLOR=0` 时无 ESC 字符，但作为防御性设计保留。
+- 每个测试用例使用 `shutil.copy2(DISK_IMG, temp)` 复制临时磁盘副本，不破坏正式 `os/disk.img`。
+- 统一 20 秒超时；超时后 kill cemu 并打印已收集输出。
+- 每条测试失败时通过 `assert_in_output(*patterns)` 打印完整输出便于定位。
+
+### 测试覆盖
+
+共 7 个测试用例，全部通过（2026-06-20）：
+
+| 测试 | 命令序列 | 验证点 |
+|------|----------|--------|
+| A. 启动与 Shell | `help` → `exit` | "Welcome to MiniOS"、"Built-in commands"、"Shell exited" |
+| B. 文件系统基础 | `mkdir` / `write` / `cat` / `ls` | "hello"、"message.txt" |
+| C. ELF 参数 | `argtest hello "two words"` | "argc"、"hello"、"two words" |
+| D. fork/exec/wait | `forktest` | "[forktest] PASS" |
+| E. 文件系统压力 | `fstest` | "[fstest] PASS" |
+| F. 后台/ps/kill | `spin &` → `ps` → `kill -15 PID` | `[pid N]`、正则提取 PID、"spin" 在 ps 中出现 |
+| G. 持久化 | 第一次写入文件 → 第二次重启读取 | 第二次启动后 "persistent" 仍可读取 |
+
+### 设计决策
+
+1. **非阻塞 I/O**：Shell 提示符不以 `\n` 结尾，`readline()` 会永久阻塞。使用 `fcntl.O_NONBLOCK` + `select` 逐块读取，避免此问题。
+
+2. **`_seen` 位置追踪**：`read_until(pattern)` 只匹配自上次调用以来新出现的输出。若不追踪，第一次匹配到 `minios:/>` 后，后续所有 `read_until("minios:/>")` 都会立即返回。
+
+3. **临时磁盘副本**：每个测试复制一份 `os/disk.img`，避免测试写入污染正式镜像，也保证测试间互不干扰。
+
+4. **`BOOT_COLOR=0`**：要求用户以无颜色模式构建 MiniOS，简化输出匹配。但 `strip_ansi()` 作为防御层保留。
+
+### 运行命令
+
+```bash
+cd os && make clean && make BOOT_COLOR=0
+python3 tests/test_minios_integration.py
+```
+
+### 验证
+
+- 7/7 测试全部通过，耗时约 4.8 秒。
+- 原有 CTest 98/98 未受影响。
+- 正式 `os/disk.img` 未被修改。
+
+### 经验
+
+1. 对于不以换行结尾的输出（如 Shell 提示符），二进制管道 + 非阻塞 I/O 比文本模式 `readline()` 更可靠。
+2. `subprocess.Popen.returncode or -1` 在 Python 中有 truthiness 陷阱（`0 or -1` 返回 `-1`），必须显式判断 `is not None`。
+3. 集成测试作为"可执行文档"，比手动验证更可靠、可复现；每项测试失败时打印完整输出可以显著加快定位。
+
+***
+
 ## 2026-06-20 — 独立 Bootloader 与两阶段启动
 
 ### 目标

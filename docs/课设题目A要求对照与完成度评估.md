@@ -27,7 +27,7 @@
 验证证据：
 
 - Bootloader 入口 `0x80000000`，内核入口 `0x80200000`。
-- 98/98 项 CTest 全部通过。
+- 105/105 项 CTest 全部通过（含 98 项模拟器单元测试 + 7 项 MiniOS 系统级集成测试）。
 - 正式 `os/disk.img` 已无损迁移并成功启动到 Shell。
 - 详细实现见 [BOOTLOADER.md](BOOTLOADER.md)。
 
@@ -94,7 +94,7 @@ printf "exit\n" | ../build_wsl/cemu build/kernel.bin --disk disk.img
 结果：
 
 - 模拟器与内核构建成功。
-- CTest 共 97 项，97 项全部通过。
+- CTest 共 105 项全部通过（98 项模拟器硬件单元测试 + 7 项 MiniOS 系统级集成测试）。
 - MiniOS 成功从 M 态进入 S 态并进入 `kernel_main`。
 - 物理内存、Sv39、MiniFS、调度器和用户 Shell 均报告 `[ OK ]`。
 - Shell 能接收 `exit`，内核随后通过 `TEST_FINISH` 正常关闭模拟器。
@@ -150,7 +150,7 @@ Shell exited, halting MiniOS.
 | 技术指标 | 状态 | 结论 |
 |---|---|---|
 | 能在模拟器中成功启动并进入内核主函数 | 完成 | Bootloader 入口为 0x80000000，内核入口为 0x80200000；实际启动成功 |
-| 启动过程稳定可复现，无异常重启或死机 | 完成 | 本次构建和启动成功，Shell 正常退出并主动停机；97 项测试全部通过 |
+| 启动过程稳定可复现，无异常重启或死机 | 完成 | 本次构建和启动成功，Shell 正常退出并主动停机；105 项测试全部通过 |
 
 ### 4.3 Bootloader 的历史判定（已由顶部最终复评替代）
 
@@ -569,7 +569,7 @@ Shell exited, halting MiniOS.
 | 系统调用 | `os/kernel/syscall.c`、`os/user/libc.c` |
 | MiniFS | `os/kernel/minifs.c`、`tools/mkfs_minifs.py` |
 | Shell | `os/user/shell.c` |
-| 自动化测试 | `tests/unitest/`、`tests/test_mkfs_minifs.py` |
+| 自动化测试 | `tests/unitest/`、`tests/test_mkfs_minifs.py`、`tests/test_install_kernel.py`、`tests/test_minios_integration.py` |
 
 ## 16. 最终判断
 
@@ -588,3 +588,12 @@ Shell 管道
 ```
 
 若答辩前只选择一个增强项，优先完成独立 Bootloader；若选择两个，再加入用户异常隔离。这样投入相对可控，同时最能补强题目原文中容易被追问的部分。
+
+### 测试体系
+
+项目已形成两层自动化测试覆盖：
+
+1. **模拟器硬件单元测试**（98 项）：基于 Google Test，覆盖 RV64I 指令、CSR、DRAM、Bus、CPU、MMU、PLIC、CLINT、UART 等硬件模块，通过 `ctest` 运行。
+2. **MiniOS 系统级集成测试**（7 项）：基于 Python `unittest`，通过 `subprocess.Popen` 驱动 cemu 与 MiniOS Shell 交互，黑盒验证启动、文件系统、ELF 程序、进程管理、后台任务和持久化等 OS 核心功能。详见 `tests/test_minios_integration.py`。
+
+两层测试互补：单元测试保证模拟器硬件正确性，集成测试证明操作系统整体行为符合预期。

@@ -121,7 +121,8 @@ make run
 | MMU 测试 (MmuTest) | 13 | 13 | 0 | 0 |
 | 内核安装测试 | 1 | 1 | 0 | 0 |
 | mkfs MiniFS 测试 | 1 | 1 | 0 | 0 |
-| **合计** | **98** | **98** | **0** | **0** |
+| MiniOS 系统级集成测试 | 7 | 7 | 0 | 0 |
+| **合计** | **105** | **105** | **0** | **0** |
 
 ### MiniOS 运行验证
 
@@ -157,6 +158,46 @@ minios:/> _
 - 用户 libc 的 `printf` 会正确返回当前支持格式实际写出的字符数。
 - Shell exit 后 kernel_main 通过 `task_waitpid(shell_pid)` 检测到退出，写入 TEST_FINISH 主动停机
 - syscall 陷阱支持静默模式（`trap_silent=1`），Shell 运行时抑制 TRAP 日志噪音
+
+### MiniOS 系统级集成测试
+
+> 新增于 2026-06-20。通过自动化 Python 脚本对 MiniOS 进行黑盒 Shell 交互测试，
+> 以此证明操作系统本身的功能，与模拟器硬件单元测试互补。
+
+测试脚本：`tests/test_minios_integration.py`
+
+运行方式：
+
+```bash
+# 先构建（假设已构建 cemu 和 MiniOS）
+cmake --build build_wsl -j$(nproc)
+cd os && make clean && make BOOT_COLOR=0
+
+# 运行所有集成测试
+python3 tests/test_minios_integration.py
+```
+
+共 7 个测试用例，覆盖：
+
+| 测试用例 | 验证内容 |
+|----------|----------|
+| TestBootAndShell (A) | 启动到 Shell、`help` 输出内置命令列表、`exit` 正常退出 |
+| TestFileSystemBasics (B) | `mkdir` 创建目录、`write` 写入文件、`cat` 读取、`ls` 列出 |
+| TestArgTest (C) | ELF 用户程序 `argtest` 接收 `argc/argv` 参数 |
+| TestForkTest (D) | `forktest` 验证 `fork/execve/waitpid` 完整流程 |
+| TestFSTest (E) | `fstest` 压力测试（64 KiB 写入 + seek + 校验） |
+| TestBackgroundPsKill (F) | 后台 `spin &`、`ps` 查看进程、正则提取 PID、`kill -15` 终止 |
+| TestPersistence (G) | 跨重启持久化：写入文件 → 重启 → 读取验证 |
+
+设计要点：
+
+- 每个测试用例使用临时 `disk.img` 副本（`/tmp/minios-test-XXXX.img`），不破坏正式 `os/disk.img`。
+- 使用 `subprocess.Popen` + 非阻塞 I/O + `select` 与 cemu 交互，兼容不以换行结尾的 Shell 提示符。
+- 每条测试独立启动 cemu，避免进程残留和状态污染。
+- 统一 20 秒超时，超时后强制 kill cemu 并打印已收集输出。
+- 持久化测试（G）使用同一个临时磁盘副本启动两次，验证磁盘内容跨重启保留。
+- 提供 `strip_ansi()` 函数防止 ANSI 转义序列影响模式匹配（`BOOT_COLOR=0` 时理论无 ESC 字符）。
+- 每条测试失败时打印完整输出，便于定位。
 
 ## 四、模块完成度
 
