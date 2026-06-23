@@ -1,0 +1,23 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+main [label="main.cpp\n加载 boot.bin 与 disk.img"];
+cpu [label="CPU Core\nPC / GPR / Privilege"];
+ins [label="Instruction Executor\nRV64I 译码与执行"];
+csr [label="CSR\n异常 / 中断 / 委托"];
+mmu [label="MMU\nSv39 地址翻译"];
+bus [label="Bus\n物理地址与 MMIO 路由"];
+dram [label="DRAM\n128 MiB"];
+uart [label="UART"];
+clint [label="CLINT"];
+plic [label="PLIC"];
+block [label="Block Device\n8 MiB disk.img"];
+main -> cpu; cpu -> ins; cpu -> csr; cpu -> mmu; mmu -> bus; ins -> bus;
+bus -> dram; bus -> uart; bus -> clint; bus -> plic; bus -> block;
+{rank=same; ins; csr; mmu}
+{rank=same; dram; uart; clint; plic; block}
+
+}

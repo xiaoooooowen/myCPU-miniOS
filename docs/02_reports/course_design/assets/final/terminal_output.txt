@@ -1,0 +1,42 @@
+[BOOT] MiniOS loader
+[BOOT] reading kernel header
+[BOOT] loading kernel -> 0x0000000080200000
+[BOOT] checksum OK
+[BOOT] jumping to kernel 0x0000000080200000
+
+  __  __ _       _  ___  ____
+ |  \/  (_)_ __ (_)/ _ \/ ___|
+ | |\/| | | '_ \| | | | \___ \
+ | |  | | | | | | | |_| |___) |
+ |_|  |_|_|_| |_|_|\___/|____/
+
+ MiniOS | RV64I | S-mode | Sv39
+
+ [ OK ] Physical memory    32091 pages free
+ [ OK ] Virtual memory     Sv39, 128 MiB mapped
+ [ OK ] MiniFS             8 MiB persistent disk
+ [ OK ] Scheduler          RR, 10 ms quantum
+ [ OK ] User shell         pid 1
+
+Welcome to MiniOS.
+Type 'help' for commands.
+minios:/> help
+Built-in commands
+  help                 show this help
+  cd PATH              change directory
+  exit [STATUS]        leave the shell
+  exec PROGRAM [ARGS]  replace the shell
+  run PROGRAM [ARGS]   run a program
+
+External commands
+  ls [PATH]            list files
+  cat FILE             print a file
+  echo [TEXT]          print text
+  pwd                  print current directory
+  ps                   show processes
+  kill [-9|-15] PID    terminate a process
+  env                  show environment
+  mkdir PATH           create a directory
+  rm PATH              remove a file or empty directory
+  touch FILE           create a file
+  write FILE TEXT      replace file contents

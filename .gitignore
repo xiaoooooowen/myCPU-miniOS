@@ -5,7 +5,7 @@ build_wsl/
 cmake-build-*/
 
 # ============ RISC-V 测试构建产物 ============
-tests/riscv-tests/
+tests/cemu/riscv/riscv-tests/
 
 # ============ IDE / 编辑器 ============
 .vs/
@@ -38,16 +38,16 @@ compile_commands.json
 # ============ ELF 可执行文件 ============
 *.elf
 
+# ============ 映射文件 ============
+*.map
+
 # ============ 生成的文件 ============
 report_artifacts/
-mycpu/
 
 # ============ PDF 课程文档 ============
 *.pdf
 
 # ============ 汇报 / 报告相关 ============
-docs/report_assets/
-docs/report_render/
 docs/pandoc-header.tex
 *进度报告*
 *.docx
@@ -55,6 +55,11 @@ docs/pandoc-header.tex
 # ============ LaTeX 中间文件 ============
 *.aux
 *.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
 
 # ============ 系统文件 ============
 .DS_Store
@@ -68,8 +73,10 @@ docs/*.gif
 # ============ Python 缓存 ============
 __pycache__/
 *.pyc
+
 # ============ Clang 缓存 ============
 .cache
+
 # ============ claude ============
 .claude
 
@@ -78,3 +85,15 @@ __pycache__/
 
 # ============ 输出材料 ============
 outputs/
+
+# ============ CI / Agent 工作目录 ============
+.agents/
+
+# ============ wiki 中间产物 ============
+docs/wiki/
+
+# ============ artifacts 生成物（保留 README.md） ============
+artifacts/reports/*
+artifacts/logs/*
+artifacts/screenshots/*
+!artifacts/README.md

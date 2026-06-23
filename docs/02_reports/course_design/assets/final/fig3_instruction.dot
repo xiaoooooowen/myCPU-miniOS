@@ -1,0 +1,21 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+start [label="检查停机状态\n推进 CLINT"];
+irq [label="检查待处理中断"];
+fetch [label="按 PC 取指"];
+translate [label="MMU 地址翻译\n权限检查"];
+decode [label="opcode / funct3 / funct7 译码"];
+execute [label="ALU / 访存 / 跳转 / CSR"];
+update [label="更新 PC"];
+trap [label="异常或中断？", shape=diamond, fillcolor="white"];
+state [label="写 EPC / CAUSE / TVAL\n切换特权级并跳转 TVEC"];
+start -> irq -> fetch -> translate -> decode -> execute -> update -> trap;
+trap -> start [label="否"];
+trap -> state [label="是"];
+state -> start;
+
+}

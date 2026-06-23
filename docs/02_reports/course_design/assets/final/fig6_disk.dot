@@ -1,0 +1,12 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+disk [shape=record, style="filled", fillcolor="white",
+label="{8 MiB disk.img（16384 × 512 B）|{扇区 0\n超级块|扇区 1\ninode 位图|扇区 2-5\n数据块位图|扇区 6-37\ninode 表|扇区 38-15359\nMiniFS 数据区|扇区 15360\n64 B 内核头|扇区 15361-16383\nkernel.bin}}"];
+note [label="MiniFS：256 inode，单文件最大 64 KiB\n内核槽：固定加载地址 0x80200000"];
+disk -> note [style=dashed, arrowhead=none];
+
+}
