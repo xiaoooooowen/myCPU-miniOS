@@ -85,4 +85,14 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_SOURCE_DIR}/tests/test_install_kernel.py
     )
+    add_test(
+        NAME minios_integration
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_minios_integration.py
+    )
+    set_tests_properties(minios_integration PROPERTIES
+        TIMEOUT 180
+        RUN_SERIAL TRUE
+        LABELS "integration;minios"
+    )
 endif()

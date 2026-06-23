@@ -198,6 +198,12 @@ class MiniOSRunner:
             except subprocess.TimeoutExpired:
                 self._process.kill()
                 self._process.wait(timeout=3)
+        else:
+            try:
+                if self._process.stdin is not None:
+                    self._process.stdin.close()
+            except Exception:
+                pass
         self._drain_stdout()
         stderr_extra = ""
         try:
@@ -361,9 +367,10 @@ class TestArgTest(MiniOSIntegrationBase):
         self._runner.collect_remaining()
 
         self.assert_in_output(
-            "argc",
-            "hello",
-            "two words",
+            "[argtest] argc",
+            "[argtest] argv contents",
+            "[argtest] environment",
+            "[argtest] ALL PASS",
         )
         self._check_clean_shutdown()
 
@@ -385,7 +392,13 @@ class TestForkTest(MiniOSIntegrationBase):
         self._runner.read_until("Shell exited", timeout=TEST_TIMEOUT)
         self._runner.collect_remaining()
 
-        self.assert_in_output("[forktest] PASS")
+        self.assert_in_output(
+            "[forktest] fork child",
+            "[forktest] child branch",
+            "[forktest] waitpid",
+            "[forktest] child exit code",
+            "[forktest] ALL PASS",
+        )
         self._check_clean_shutdown()
 
 
@@ -406,12 +419,48 @@ class TestFSTest(MiniOSIntegrationBase):
         self._runner.read_until("Shell exited", timeout=TEST_TIMEOUT)
         self._runner.collect_remaining()
 
-        self.assert_in_output("[fstest] PASS")
+        self.assert_in_output(
+            "[fstest] create file",
+            "[fstest] write 64 KiB",
+            "[fstest] indirect blocks",
+            "[fstest] seek/read",
+            "[fstest] verify contents",
+            "[fstest] close file",
+            "[fstest] ALL PASS",
+        )
         self._check_clean_shutdown()
 
 
 # ---------------------------------------------------------------------------
-# 测试用例 F: 后台进程、ps、kill 测试
+# 测试用例 F: 用户态一键测试套件
+# ---------------------------------------------------------------------------
+
+class TestAll(MiniOSIntegrationBase):
+    def test_f_testall_summary(self):
+        """运行 testall，验证三个独立 ELF 测试及最终汇总。"""
+        self._runner.start()
+        self._runner.read_until("minios:/>", timeout=TEST_TIMEOUT)
+
+        self._runner.send("testall")
+        self._runner.read_until("minios:/>", timeout=TEST_TIMEOUT)
+
+        self._runner.send("exit")
+        self._runner.read_until("Shell exited", timeout=TEST_TIMEOUT)
+        self._runner.collect_remaining()
+
+        self.assert_in_output(
+            "MiniOS Test Suite",
+            "[argtest] ALL PASS",
+            "[forktest] ALL PASS",
+            "[fstest] ALL PASS",
+            "Summary: 3/3 programs passed",
+            "[ALL TESTS PASSED]",
+        )
+        self._check_clean_shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 测试用例 G: 后台进程、ps、kill 测试
 # ---------------------------------------------------------------------------
 
 class TestBackgroundPsKill(MiniOSIntegrationBase):
@@ -439,11 +488,31 @@ class TestBackgroundPsKill(MiniOSIntegrationBase):
         # ps 查看进程表
         self._runner.send("ps")
         self._runner.read_until("minios:/>", timeout=TEST_TIMEOUT)
-        self.assert_in_output("spin")
+        clean = strip_ansi(self._runner._output)
+        if not re.search(
+            rf"(?m)^\s*{pid}\s+\d+\s+\w+\s+\d+\s+\d+\s+/tests/spin\s*$",
+            clean,
+        ):
+            self.fail(
+                f"spin process {pid} not found in process table:\n"
+                f"--- Full output ---\n{self._runner._output}\n"
+                f"--- End output ---"
+            )
 
         # kill 终止 spin
         self._runner.send(f"kill -15 {pid}")
         self._runner.read_until("minios:/>", timeout=TEST_TIMEOUT)
+
+        before_second_ps = len(self._runner._output)
+        self._runner.send("ps")
+        self._runner.read_until("minios:/>", timeout=TEST_TIMEOUT)
+        after_kill = strip_ansi(self._runner._output[before_second_ps:])
+        if re.search(rf"(?m)^\s*{pid}\s+.*?/tests/spin\s*$", after_kill):
+            self.fail(
+                f"spin process {pid} still present after kill:\n"
+                f"--- New output ---\n{after_kill}\n"
+                f"--- End output ---"
+            )
 
         self._runner.send("exit")
         self._runner.read_until("Shell exited", timeout=TEST_TIMEOUT)
@@ -453,7 +522,7 @@ class TestBackgroundPsKill(MiniOSIntegrationBase):
 
 
 # ---------------------------------------------------------------------------
-# 测试用例 G: 持久化测试
+# 测试用例 H: 持久化测试
 # ---------------------------------------------------------------------------
 
 class TestPersistence(unittest.TestCase):

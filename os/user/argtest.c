@@ -1,10 +1,27 @@
 #include "user.h"
 
+static int report(const char *name, int passed) {
+    printf("[argtest] %s %s\n", name, passed ? "PASS" : "FAIL");
+    return passed;
+}
+
 int main(int argc, char **argv, char **envp) {
-    printf("argc=%d\n", argc);
-    for (int i = 0; i < argc; i++)
-        printf("argv[%d]=%s\n", i, argv[i]);
-    for (int i = 0; envp != 0 && envp[i] != 0; i++)
-        printf("envp[%d]=%s\n", i, envp[i]);
-    return 0;
+    int passed = 1;
+
+    passed &= report("argc ...............", argc == 3);
+    passed &= report("argv contents ......",
+                     argc == 3 &&
+                     strcmp(argv[1], "hello") == 0 &&
+                     strcmp(argv[2], "two words") == 0);
+
+    char *path = getenv_from(envp, "PATH");
+    char *home = getenv_from(envp, "HOME");
+    char *pwd = getenv_from(envp, "PWD");
+    passed &= report("environment ........",
+                     path != 0 && strcmp(path, "/bin:/tests") == 0 &&
+                     home != 0 && strcmp(home, "/") == 0 &&
+                     pwd != 0 && pwd[0] == '/');
+
+    puts(passed ? "[argtest] ALL PASS" : "[argtest] TEST FAILED");
+    return passed ? 0 : 1;
 }

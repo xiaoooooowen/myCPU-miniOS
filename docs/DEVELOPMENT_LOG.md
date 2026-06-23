@@ -5,6 +5,61 @@
 
 ***
 
+## 2026-06-23 — 用户测试程序结构化重构与一键测试套件
+
+### 目标
+
+将三个独立的测试用户程序（argtest、forktest、fstest）从简单的"PASS/FAIL"二元输出升级为细粒度分步骤报告，并新增 `testall` 一键测试套件，使集成测试可验证每个子步骤的正确性。
+
+### 实现
+
+**argtest（参数与环境测试）**
+- 分步骤验证 argc、argv 内容、环境变量（PATH/HOME/PWD）。
+- 使用 `getenv_from(envp)` 直接解析传入环境，不依赖全局 `environ`。
+- 输出格式：每条输出 `[argtest] <name> PASS/FAIL`，最终输出 `[argtest] ALL PASS` 或 `[argtest] TEST FAILED`。
+
+**forktest（进程管理测试）**
+- 分步骤验证 fork 子进程、child 分支执行、waitpid 返回值、子进程退出码（exit(42)）。
+- 输出格式：`[forktest] fork child ........ PASS` 等步骤行，最终 `[forktest] ALL PASS`。
+
+**fstest（文件系统压力测试）**
+- 分步骤验证创建文件、64 KiB 写入（含间接块）、seek 定位、读取校验、文件关闭。
+- 使用辅助函数 `pass()`/`fail()` 统一格式，失败时正确关闭 fd 并提前返回。
+- 输出格式：`[fstest] <name> PASS/FAIL`，最终 `[fstest] ALL PASS`。
+
+**testall（一键测试套件）**
+- 新增 `os/user/testall.c`：通过 `fork/execve/waitpid` 顺序运行 argtest、forktest、fstest。
+- 每个子进程继承正确的 argv 和 envp（argtest 接收 "hello" 和 "two words" 参数）。
+- 汇总输出 `Summary: 3/3 programs passed` 和 `[ALL TESTS PASSED]`。
+- 添加到 `os/Makefile` 的 `TEST_PROGRAMS`。
+
+**集成测试框架增强**
+- 新增 `TestAll` 测试用例，验证 `testall` 完整输出（8 个测试用例总计）。
+- 更新现有测试断言：argtest→验证各步骤行，forktest→验证 5 个步骤，fstest→验证 7 个步骤。
+- `TestBackgroundPsKill`：ps 输出改用正则匹配进程行，kill 成功后做二次 ps 验证进程已消失。
+- `MiniOSRunner._stop()`：增加 `stdin.close()` 和异常保护，避免已终止进程上再次操作引发异常。
+- CMakeLists.txt：注册 `minios_integration` 为 CTest，标记为 SERIAL 和 `integration;minios` 标签，设置 180 秒超时。
+
+### 验证
+
+- 8/8 集成测试全部通过。
+- CTest 测试总数：106 项全部通过（原 105 + 新增 minios_integration 注册）。
+- `testall` 一键运行三个测试程序，汇总无误。
+
+### 设计决策
+
+1. **分步骤报告优于单一 PASS/FAIL**：结构化输出让集成测试可以验证功能内部每个环节，错误定位从"哪个程序失败"细化到"哪个步骤失败"。
+2. **testall 使用 fork/execve/waitpid 而非直接函数调用**：测试套件本身就是对进程创建、程序加载和父子同步的真实场景测试，而非简单的函数级测试。
+3. **ps/kill 二次验证**：kill 后再次 ps 确认进程消失，避免误判（如 kill 返回成功但进程仍在进程表中）。
+
+### 经验
+
+1. 测试程序的结构化输出与集成测试断言互为"可执行文档"——测试步骤行即功能清单。
+2. `testall` 作为用户态测试套件，比 Shell 手动逐个运行更高效，也为后续增加更多测试程序提供了聚合模板。
+3. 集成测试框架本身也需要维护——测试输出格式变化时，断言必须同步更新。
+
+***
+
 ## 2026-06-20 — MiniOS 系统级集成测试框架
 
 ### 目标

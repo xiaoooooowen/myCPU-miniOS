@@ -36,7 +36,7 @@ OBJS = $(BUILD_DIR)/start.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/uart.o $(BUILD_DI
 LOADER_OBJS = $(BUILD_DIR)/loader_start.o $(BUILD_DIR)/loader.o
 
 BIN_PROGRAMS = shell ls cat echo pwd ps kill env mkdir rm touch write
-TEST_PROGRAMS = spin fstest forktest argtest
+TEST_PROGRAMS = spin fstest forktest argtest testall
 USER_COMMON = $(USER_BUILD_DIR)/crt0.o $(USER_BUILD_DIR)/libc.o
 BIN_TARGETS = $(addprefix $(ROOTFS_DIR)/bin/,$(BIN_PROGRAMS))
 TEST_TARGETS = $(addprefix $(ROOTFS_DIR)/tests/,$(TEST_PROGRAMS))

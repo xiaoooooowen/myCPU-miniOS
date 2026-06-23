@@ -121,8 +121,8 @@ make run
 | MMU 测试 (MmuTest) | 13 | 13 | 0 | 0 |
 | 内核安装测试 | 1 | 1 | 0 | 0 |
 | mkfs MiniFS 测试 | 1 | 1 | 0 | 0 |
-| MiniOS 系统级集成测试 | 7 | 7 | 0 | 0 |
-| **合计** | **105** | **105** | **0** | **0** |
+| MiniOS 系统级集成测试 | 8 | 8 | 0 | 0 |
+| **合计** | **106** | **106** | **0** | **0** |
 
 ### MiniOS 运行验证
 
@@ -143,7 +143,7 @@ minios:/> _
 
 - Shell 是从 `/bin/shell` 加载的独立 C 语言 ELF 用户进程。
 - `/bin` 包含 `ls/cat/echo/pwd/ps/kill/env/mkdir/rm/touch/write`。
-- `/tests` 包含 `spin/fstest/forktest/argtest`。
+- `/tests` 包含 `spin/fstest/forktest/argtest/testall`。
 - 支持 PATH 搜索、argv/envp、后台进程、`exec`、`run` 和 `< > >>`。
 - 提示符显示当前工作目录，例如 `minios:/demo/>`；`cd demo` 与 `cd demo/` 均有效。
 - `ps` 使用固定列宽显示进程信息；后台 `spin` 保持静默，避免异步输出破坏输入行。
@@ -177,17 +177,18 @@ cd os && make clean && make BOOT_COLOR=0
 python3 tests/test_minios_integration.py
 ```
 
-共 7 个测试用例，覆盖：
+共 8 个测试用例，覆盖：
 
 | 测试用例 | 验证内容 |
 |----------|----------|
 | TestBootAndShell (A) | 启动到 Shell、`help` 输出内置命令列表、`exit` 正常退出 |
 | TestFileSystemBasics (B) | `mkdir` 创建目录、`write` 写入文件、`cat` 读取、`ls` 列出 |
-| TestArgTest (C) | ELF 用户程序 `argtest` 接收 `argc/argv` 参数 |
-| TestForkTest (D) | `forktest` 验证 `fork/execve/waitpid` 完整流程 |
-| TestFSTest (E) | `fstest` 压力测试（64 KiB 写入 + seek + 校验） |
-| TestBackgroundPsKill (F) | 后台 `spin &`、`ps` 查看进程、正则提取 PID、`kill -15` 终止 |
-| TestPersistence (G) | 跨重启持久化：写入文件 → 重启 → 读取验证 |
+| TestArgTest (C) | ELF 用户程序 `argtest` 接收 `argc/argv` 参数（分步骤验证） |
+| TestForkTest (D) | `forktest` 验证 `fork/execve/waitpid` 完整流程（分步骤验证） |
+| TestFSTest (E) | `fstest` 压力测试（64 KiB 写入 + seek + 校验，分步骤验证） |
+| TestAll (F) | `testall` 一键运行全部用户测试，汇总 `3/3 programs passed` |
+| TestBackgroundPsKill (G) | 后台 `spin &`、`ps` 查看进程、正则提取 PID、`kill -15` 终止、二次 ps 确认消失 |
+| TestPersistence (H) | 跨重启持久化：写入文件 → 重启 → 读取验证 |
 
 设计要点：
 
@@ -198,6 +199,7 @@ python3 tests/test_minios_integration.py
 - 持久化测试（G）使用同一个临时磁盘副本启动两次，验证磁盘内容跨重启保留。
 - 提供 `strip_ansi()` 函数防止 ANSI 转义序列影响模式匹配（`BOOT_COLOR=0` 时理论无 ESC 字符）。
 - 每条测试失败时打印完整输出，便于定位。
+- 集成测试已注册为 CTest（`minios_integration`），标记 `RUN_SERIAL TRUE`、180 秒超时，可通过 `ctest -R minios_integration` 单独运行。
 
 ## 四、模块完成度
 

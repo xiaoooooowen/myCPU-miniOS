@@ -595,6 +595,7 @@ Shell 回收:
 | [os/user/fstest.c](file:///home/xiaowen/projects/mycpu/os/user/fstest.c) | 文件系统测试 |
 | [os/user/forktest.c](file:///home/xiaowen/projects/mycpu/os/user/forktest.c) | fork 测试 |
 | [os/user/argtest.c](file:///home/xiaowen/projects/mycpu/os/user/argtest.c) | 参数测试 |
+| [os/user/testall.c](file:///home/xiaowen/projects/mycpu/os/user/testall.c) | 一键测试套件(顺序执行 argtest+forktest+fstest) |
 
 ### 工具脚本
 
