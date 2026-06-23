@@ -1,0 +1,25 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+read [label="Shell 读取并解析命令\nargv / 重定向 / 后台标志"];
+fork [label="fork()", shape=diamond, fillcolor="white"];
+parent [label="父进程"];
+child [label="子进程"];
+redirect [label="open + dup2\n应用 <、>、>>"];
+exec [label="PATH 搜索并 execve"];
+elf [label="内核 ELF loader\n建立用户地址空间与初始栈"];
+run [label="sret 进入 U-mode\ncrt0 → main"];
+wait [label="前台：waitpid\n后台：继续读取命令"];
+exit [label="exit → ZOMBIE\n父进程回收"];
+read -> fork;
+fork -> parent [label="pid > 0"];
+fork -> child [label="pid = 0"];
+child -> redirect -> exec -> elf -> run -> exit;
+parent -> wait;
+exit -> wait;
+wait -> read;
+
+}

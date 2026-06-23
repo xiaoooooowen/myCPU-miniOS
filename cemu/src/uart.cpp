@@ -1,0 +1,115 @@
+// uart.cpp
+
+#include "uart.h"
+#include <iostream>
+#include <unistd.h>
+#include <poll.h>
+#include "log.h"
+
+namespace cemu {
+
+Uart::Uart(bool start_stdin_listener) : uart(UART_SIZE), interrupt(false), stdin_running(false) {
+  uart[UART_LSR] |= MASK_UART_LSR_TX;
+  if (start_stdin_listener) {
+    this->start_stdin_listener();
+  }
+}
+
+Uart::~Uart() {
+  stdin_running.store(false);
+  cv.notify_all();
+  if (stdin_thread.joinable()) {
+    stdin_thread.join();
+  }
+  restore_terminal();
+}
+
+void Uart::start_stdin_listener() {
+  if (stdin_running.exchange(true))
+    return;
+  configure_terminal();
+  stdin_thread = std::thread(&Uart::stdin_listener, this);
+}
+
+void Uart::configure_terminal() {
+  if (!isatty(STDIN_FILENO) ||
+      tcgetattr(STDIN_FILENO, &original_terminal) != 0)
+    return;
+
+  struct termios terminal = original_terminal;
+  terminal.c_lflag &= static_cast<tcflag_t>(~(ECHO | ICANON));
+  terminal.c_cc[VMIN] = 1;
+  terminal.c_cc[VTIME] = 0;
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &terminal) == 0)
+    terminal_configured = true;
+}
+
+void Uart::restore_terminal() {
+  if (!terminal_configured)
+    return;
+  tcsetattr(STDIN_FILENO, TCSANOW, &original_terminal);
+  terminal_configured = false;
+}
+
+void Uart::stdin_listener() {
+  char byte;
+  while (stdin_running.load()) {
+    // 使用 poll 检查 stdin 是否有数据，超时 100ms
+    struct pollfd pfd;
+    pfd.fd = STDIN_FILENO;
+    pfd.events = POLLIN;
+    int ret = poll(&pfd, 1, 100);  // 100ms 超时
+    if (ret < 0) break;
+    if (ret == 0) continue;  // 超时，继续检查 stdin_running
+
+    if (!stdin_running.load()) break;
+
+    // 读取一个字符
+    ssize_t n = read(STDIN_FILENO, &byte, 1);
+    if (n <= 0) break;  // EOF 或错误
+
+    std::unique_lock<std::mutex> lock(mtx);
+    while (stdin_running.load() && (uart[UART_LSR] & MASK_UART_LSR_RX) == 1) {
+      cv.wait(lock);
+    }
+    if (!stdin_running.load()) break;
+    uart[UART_RHR] = byte;
+    interrupt.store(true);
+    uart[UART_LSR] |= MASK_UART_LSR_RX;
+  }
+}
+
+bool Uart::is_interrupting() {
+  return interrupt.exchange(false);
+}
+
+uint64_t Uart::load(uint64_t addr, uint64_t size) {
+  if (size != 8) {
+    throw Exception(ExceptionType::LoadAccessFault, addr);
+  }
+  std::lock_guard<std::mutex> lock(mtx);
+  uint64_t index = addr - UART_BASE;
+  if (index == UART_RHR) {
+    cv.notify_one();
+    uart[UART_LSR] &= ~MASK_UART_LSR_RX;
+    return uart[UART_RHR];
+  } else {
+    return uart[index];
+  }
+}
+
+void Uart::store(uint64_t addr, uint64_t size, uint64_t value) {
+  if (size != 8) {
+    throw Exception(ExceptionType::StoreAMOAccessFault, addr);
+  }
+  std::lock_guard<std::mutex> lock(mtx);
+  uint64_t index = addr - UART_BASE;
+  if (index == UART_THR) {
+    std::cout << static_cast<char>(value);
+    std::cout.flush();
+  } else {
+    uart[index] = value;
+  }
+}
+
+}

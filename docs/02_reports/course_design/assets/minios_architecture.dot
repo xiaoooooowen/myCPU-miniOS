@@ -1,0 +1,120 @@
+digraph MiniOSArchitecture {
+  graph [
+    rankdir=TB,
+    bgcolor="white",
+    pad="0.28",
+    nodesep="0.36",
+    ranksep="0.55",
+    fontname="Microsoft YaHei",
+    fontsize=20,
+    label="myCPU + MiniOS 项目架构（当前阶段）",
+    labelloc=t,
+    compound=true,
+    splines=ortho
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Microsoft YaHei",
+    fontsize=11,
+    color="#555555",
+    fillcolor="#FFFFFF",
+    fontcolor="#111111",
+    margin="0.16,0.09",
+    penwidth=1.2
+  ];
+
+  edge [
+    color="#444444",
+    penwidth=1.25,
+    arrowsize=0.72,
+    fontname="Microsoft YaHei",
+    fontsize=9,
+    fontcolor="#333333"
+  ];
+
+  subgraph cluster_future {
+    label="下一阶段：用户空间与系统服务";
+    color="#888888";
+    fillcolor="#FAFAFA";
+    style="rounded,filled,dashed";
+    fontcolor="#333333";
+    fontsize=13;
+
+    user [label="用户程序 / Shell\nELF 加载 · 命令解析", color="#777777", fillcolor="#FFFFFF", style="rounded,filled,dashed"];
+    fs [label="文件系统\nRAMFS · 路径解析 · 文件描述符", color="#777777", fillcolor="#FFFFFF", style="rounded,filled,dashed"];
+    usermem [label="用户地址空间\nU-mode · 按需分页 · 权限隔离", color="#777777", fillcolor="#FFFFFF", style="rounded,filled,dashed"];
+    ipc [label="进程机制\nfork/exec/wait · 锁与信号量", color="#777777", fillcolor="#FFFFFF", style="rounded,filled,dashed"];
+
+    {rank=same; user; fs; usermem; ipc}
+  }
+
+  subgraph cluster_kernel {
+    label="MiniOS 内核层（C / RISC-V 汇编）";
+    color="#555555";
+    fillcolor="#F7F7F7";
+    style="rounded,filled";
+    fontcolor="#111111";
+    fontsize=13;
+
+    boot [label="启动与特权级切换\nstart.S · M → S · 栈/BSS"];
+    trap [label="Trap 与系统调用\ntrap.S/C · ecall · sys_write/exit"];
+    mem [label="内存管理\n页分配器 · Sv39 · MMIO 映射"];
+    task [label="任务与调度\nPCB · yield · 抢占式 RR"];
+    io [label="内核基础设施\nUART · printk · CLINT 定时器"];
+
+    {rank=same; boot; trap; mem; task; io}
+  }
+
+  subgraph cluster_sim {
+    label="myCPU RISC-V 模拟硬件层（C++23）";
+    color="#555555";
+    fillcolor="#F2F2F2";
+    style="rounded,filled";
+    fontcolor="#111111";
+    fontsize=13;
+
+    loader [label="cemu 主程序\n加载 kernel.bin"];
+    cpu [label="CPU / RV64I\n取指 · 译码 · 执行 · M/S/U"];
+    mmu [label="MMU / CSR / Exception\nSv39 翻译 · 特权控制 · 异常建模"];
+    bus [label="Bus / MMIO\n统一地址空间与设备路由"];
+    dram [label="DRAM\n128 MB 物理内存"];
+    devices [label="设备模型\nUART · CLINT · PLIC"];
+
+    {rank=same; loader; cpu; mmu}
+    {rank=same; bus; dram; devices}
+  }
+
+  tests [
+    label="验证体系：88 项单元测试 + kernel.bin 端到端启动、内存、系统调用与调度日志",
+    shape=box,
+    style="rounded,filled",
+    color="#777777",
+    fillcolor="#F7F7F7",
+    fontcolor="#222222"
+  ];
+
+  loader -> cpu [label="入口 PC"];
+  cpu -> mmu [label="访存/特权"];
+  cpu -> bus [label="取指与 load/store"];
+  mmu -> dram [label="页表读取"];
+  bus -> dram;
+  bus -> devices [label="MMIO"];
+
+  cpu -> boot [label="执行内核", color="#333333"];
+  devices -> io [label="中断/串口", color="#333333"];
+  mmu -> mem [label="地址翻译", color="#333333"];
+  cpu -> trap [label="trap", color="#333333"];
+  io -> task [label="timer tick", color="#333333"];
+  trap -> task [label="抢占入口", color="#333333"];
+  mem -> task [label="任务栈", color="#333333"];
+
+  trap -> user [style=dashed, color="#777777"];
+  mem -> usermem [style=dashed, color="#777777"];
+  task -> ipc [style=dashed, color="#777777"];
+  trap -> fs [style=dashed, color="#777777"];
+
+  dram -> tests [style=dotted, arrowhead=none];
+  task -> tests [style=dotted, arrowhead=none];
+}

@@ -1,0 +1,22 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+event [label="U-mode ecall\n或 CLINT 定时器中断"];
+entry [label="trap_entry\n切换内核栈并保存 32 个寄存器"];
+handler [label="trap_handler\n读取 scause / sepc / stval"];
+kind [label="事件类型", shape=diamond, fillcolor="white"];
+sys [label="syscall_dispatch\na7=编号，a0-a2=参数"];
+timer [label="timer_handle\n重设 mtimecmp"];
+sched [label="sched_tick\nRR 时间片检查"];
+switch [label="保存/恢复 trap context\n切换 SATP 与任务"];
+returnn [label="恢复寄存器并 sret"];
+event -> entry -> handler -> kind;
+kind -> sys [label="ecall"];
+kind -> timer [label="timer"];
+timer -> sched -> switch -> returnn;
+sys -> returnn;
+
+}

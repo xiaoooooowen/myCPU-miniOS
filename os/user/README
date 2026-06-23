@@ -1,0 +1,11 @@
+MiniOS user programs are independent static RISC-V ELF files.
+
+Try:
+  ls /bin
+  argtest hello "two words"
+  mkdir /tmp/demo
+  write /tmp/demo/message.txt persistent data
+  cat /tmp/demo/message.txt
+  echo redirected > /tmp/output.txt
+  echo appended >> /tmp/output.txt
+  cat < /tmp/output.txt

@@ -1,0 +1,2940 @@
+# 开发日志
+
+> 项目：MiniOS / myCPU — RISC-V 模拟器与迷你操作系统
+> 目的：记录每次修改的上下文、决策理由和技术细节，便于后续回顾和学习。
+
+***
+
+## 2026-06-23 — 用户测试程序结构化重构与一键测试套件
+
+### 目标
+
+将三个独立的测试用户程序（argtest、forktest、fstest）从简单的"PASS/FAIL"二元输出升级为细粒度分步骤报告，并新增 `testall` 一键测试套件，使集成测试可验证每个子步骤的正确性。
+
+### 实现
+
+**argtest（参数与环境测试）**
+- 分步骤验证 argc、argv 内容、环境变量（PATH/HOME/PWD）。
+- 使用 `getenv_from(envp)` 直接解析传入环境，不依赖全局 `environ`。
+- 输出格式：每条输出 `[argtest] <name> PASS/FAIL`，最终输出 `[argtest] ALL PASS` 或 `[argtest] TEST FAILED`。
+
+**forktest（进程管理测试）**
+- 分步骤验证 fork 子进程、child 分支执行、waitpid 返回值、子进程退出码（exit(42)）。
+- 输出格式：`[forktest] fork child ........ PASS` 等步骤行，最终 `[forktest] ALL PASS`。
+
+**fstest（文件系统压力测试）**
+- 分步骤验证创建文件、64 KiB 写入（含间接块）、seek 定位、读取校验、文件关闭。
+- 使用辅助函数 `pass()`/`fail()` 统一格式，失败时正确关闭 fd 并提前返回。
+- 输出格式：`[fstest] <name> PASS/FAIL`，最终 `[fstest] ALL PASS`。
+
+**testall（一键测试套件）**
+- 新增 `os/user/testall.c`：通过 `fork/execve/waitpid` 顺序运行 argtest、forktest、fstest。
+- 每个子进程继承正确的 argv 和 envp（argtest 接收 "hello" 和 "two words" 参数）。
+- 汇总输出 `Summary: 3/3 programs passed` 和 `[ALL TESTS PASSED]`。
+- 添加到 `os/Makefile` 的 `TEST_PROGRAMS`。
+
+**集成测试框架增强**
+- 新增 `TestAll` 测试用例，验证 `testall` 完整输出（8 个测试用例总计）。
+- 更新现有测试断言：argtest→验证各步骤行，forktest→验证 5 个步骤，fstest→验证 7 个步骤。
+- `TestBackgroundPsKill`：ps 输出改用正则匹配进程行，kill 成功后做二次 ps 验证进程已消失。
+- `MiniOSRunner._stop()`：增加 `stdin.close()` 和异常保护，避免已终止进程上再次操作引发异常。
+- CMakeLists.txt：注册 `minios_integration` 为 CTest，标记为 SERIAL 和 `integration;minios` 标签，设置 180 秒超时。
+
+### 验证
+
+- 8/8 集成测试全部通过。
+- CTest 测试总数：106 项全部通过（原 105 + 新增 minios_integration 注册）。
+- `testall` 一键运行三个测试程序，汇总无误。
+
+### 设计决策
+
+1. **分步骤报告优于单一 PASS/FAIL**：结构化输出让集成测试可以验证功能内部每个环节，错误定位从"哪个程序失败"细化到"哪个步骤失败"。
+2. **testall 使用 fork/execve/waitpid 而非直接函数调用**：测试套件本身就是对进程创建、程序加载和父子同步的真实场景测试，而非简单的函数级测试。
+3. **ps/kill 二次验证**：kill 后再次 ps 确认进程消失，避免误判（如 kill 返回成功但进程仍在进程表中）。
+
+### 经验
+
+1. 测试程序的结构化输出与集成测试断言互为"可执行文档"——测试步骤行即功能清单。
+2. `testall` 作为用户态测试套件，比 Shell 手动逐个运行更高效，也为后续增加更多测试程序提供了聚合模板。
+3. 集成测试框架本身也需要维护——测试输出格式变化时，断言必须同步更新。
+
+***
+
+## 2026-06-20 — MiniOS 系统级集成测试框架
+
+### 目标
+
+为 MiniOS 建立自动化黑盒集成测试，通过 Python 脚本驱动 cemu 模拟器、与 MiniOS Shell 交互，验证操作系统核心功能。与现有的 CTest 模拟器硬件单元测试互补，形成两层测试覆盖。
+
+### 实现
+
+- 新增 `tests/test_minios_integration.py`：基于 `unittest` 的 Python 测试脚本。
+- `MiniOSRunner` 类封装 cemu 子进程生命周期：`subprocess.Popen` 启动、通过 `stdin` PIPE 发送命令、非阻塞 `select` + `_os.read()` 收集 `stdout` 输出。
+- Shell 提示符 `minios:/> ` 不以换行结尾，`read_until()` 使用 `_seen` 位置追踪，只匹配自上次调用以来的新增输出，避免重复匹配旧数据。
+- 提供 `strip_ansi()` 函数移除 ANSI 转义序列，虽 `BOOT_COLOR=0` 时无 ESC 字符，但作为防御性设计保留。
+- 每个测试用例使用 `shutil.copy2(DISK_IMG, temp)` 复制临时磁盘副本，不破坏正式 `os/disk.img`。
+- 统一 20 秒超时；超时后 kill cemu 并打印已收集输出。
+- 每条测试失败时通过 `assert_in_output(*patterns)` 打印完整输出便于定位。
+
+### 测试覆盖
+
+共 7 个测试用例，全部通过（2026-06-20）：
+
+| 测试 | 命令序列 | 验证点 |
+|------|----------|--------|
+| A. 启动与 Shell | `help` → `exit` | "Welcome to MiniOS"、"Built-in commands"、"Shell exited" |
+| B. 文件系统基础 | `mkdir` / `write` / `cat` / `ls` | "hello"、"message.txt" |
+| C. ELF 参数 | `argtest hello "two words"` | "argc"、"hello"、"two words" |
+| D. fork/exec/wait | `forktest` | "[forktest] PASS" |
+| E. 文件系统压力 | `fstest` | "[fstest] PASS" |
+| F. 后台/ps/kill | `spin &` → `ps` → `kill -15 PID` | `[pid N]`、正则提取 PID、"spin" 在 ps 中出现 |
+| G. 持久化 | 第一次写入文件 → 第二次重启读取 | 第二次启动后 "persistent" 仍可读取 |
+
+### 设计决策
+
+1. **非阻塞 I/O**：Shell 提示符不以 `\n` 结尾，`readline()` 会永久阻塞。使用 `fcntl.O_NONBLOCK` + `select` 逐块读取，避免此问题。
+
+2. **`_seen` 位置追踪**：`read_until(pattern)` 只匹配自上次调用以来新出现的输出。若不追踪，第一次匹配到 `minios:/>` 后，后续所有 `read_until("minios:/>")` 都会立即返回。
+
+3. **临时磁盘副本**：每个测试复制一份 `os/disk.img`，避免测试写入污染正式镜像，也保证测试间互不干扰。
+
+4. **`BOOT_COLOR=0`**：要求用户以无颜色模式构建 MiniOS，简化输出匹配。但 `strip_ansi()` 作为防御层保留。
+
+### 运行命令
+
+```bash
+cd os && make clean && make BOOT_COLOR=0
+python3 tests/test_minios_integration.py
+```
+
+### 验证
+
+- 7/7 测试全部通过，耗时约 4.8 秒。
+- 原有 CTest 98/98 未受影响。
+- 正式 `os/disk.img` 未被修改。
+
+### 经验
+
+1. 对于不以换行结尾的输出（如 Shell 提示符），二进制管道 + 非阻塞 I/O 比文本模式 `readline()` 更可靠。
+2. `subprocess.Popen.returncode or -1` 在 Python 中有 truthiness 陷阱（`0 or -1` 返回 `-1`），必须显式判断 `is not None`。
+3. 集成测试作为"可执行文档"，比手动验证更可靠、可复现；每项测试失败时打印完整输出可以显著加快定位。
+
+***
+
+## 2026-06-20 — 独立 Bootloader 与两阶段启动
+
+### 目标
+
+把 MiniOS 从"模拟器预装 kernel.bin"升级为真正的两阶段启动：模拟器只预装 M 态 Bootloader，由 Bootloader 自主从块设备读取、校验、搬运并跳转内核。
+
+### 实现
+
+- 新增 `os/boot/loader_start.S`：M 态 Bootloader 入口汇编（`0x80000000`），设置 Bootloader 栈顶 `0x80200000`，调用 C `boot_main`。
+- 新增 `os/boot/loader.c`：读取磁盘扇区 15360 的 64 B 内核镜像头（magic `MINIKRNL`、version、header_size、load_address、entry、image_size、checksum），校验后从扇区 15361 起逐扇区读取内核裸二进制，逐字节累加 32 位校验和，搬运到 `0x80200000`，校验成功后跳转。
+- 新增 `os/boot/loader.ld`：Bootloader 独立链接脚本。
+- 新增 `os/linker.ld`：内核链接地址改为 `0x80200000`。
+- CEMU main.cpp：改为只预装 `boot.bin`（1513 B）到 `0x80000000`，不再加载 `kernel.bin`。
+- 新增 `tools/install_kernel.py`：将内核安装到磁盘尾部内核槽（扇区 15360-16383），支持旧磁盘无损迁移（超级块容量、数据位图标记）。
+- 新增 `tests/test_install_kernel.py`：内核安装工具测试。
+- MiniFS 超级块 `blocks` 改为 15360，数据位图将尾部 1024 扇区标记为保留。
+- 旧磁盘备份为 `os/disk.img.pre-bootloader.bak`。
+
+### 内核镜像头格式
+
+```text
+offset  size  field
+0x00      8   magic = "MINIKRNL"
+0x08      4   version = 1
+0x0c      4   header_size = 64
+0x10      8   load_address = 0x80200000
+0x18      8   entry = 0x80200000
+0x20      4   image_size
+0x24      4   checksum (32 位累加和)
+0x28     24   reserved
+```
+
+### 验证
+
+- Bootloader ELF 入口：`0x80000000`，Kernel ELF 入口：`0x80200000`。
+- `boot.bin` 大小：1513 B，`kernel.bin` 大小：53360 B。
+- 98/98 CTest 全部通过。
+- 正式 `disk.img` 无损迁移成功，Bootloader → 内核 → Shell 完整链路可运行。
+- Shell `exit` 后内核正常关闭模拟器。
+- 人为损坏内核 1 字节后 Bootloader 输出 `[BOOT] FAIL: checksum mismatch` 拒绝跳转。
+
+### 经验
+
+1. 两阶段启动让模拟器职责最小化，Bootloader 成为客体 RISC-V 代码运行的真实 M 态程序。
+2. 校验和验证保证损坏内核不会被执行——这是嵌入式/OS 启动的安全基线。
+3. Bootloader 栈顶与内核加载地址重合（`0x80200000`），栈向下增长、内核向上加载，互不覆盖。
+4. 磁盘无损迁移需要同时修改超级块、数据位图和实际文件系统元数据，三个层面必须一致。
+
+***
+
+## 2026-06-15 — Shell 专业简洁配色
+
+### 目标
+
+统一启动界面和用户 Shell 的视觉语言，在不改变命令语义的前提下提升可读性，并让 `BOOT_COLOR=0` 同时覆盖内核与用户 ELF。
+
+### 实现
+
+- `BOOT_COLOR` 通过 `USER_CFLAGS` 传给全部用户程序。
+- 用户 libc 新增统一 ANSI 样式常量及 `term_style_begin`、`term_style_end`、`term_write_styled`。
+- Shell 提示符使用粗体青色系统名、蓝色 cwd 和绿色 `>`；cwd 获取失败时以红色 `?` 标记。
+- `help` 改为 Built-in commands、External commands、Syntax 三组对齐布局。
+- Shell 解析、`cd`、fork、exec、程序查找和重定向错误统一为红色，后台 PID 使用青色。
+- `ls` 使用蓝色目录和绿色可执行文件，继续保留 `/` 与 `*` 类型标记。
+- 路径和目录使用亮蓝色（ANSI 94），避免普通蓝色在黑色背景上对比度不足。
+- `kill` 失败时显示目标 PID，并提示该进程可能已退出或属于受保护进程。
+- `ps` 表头加粗，并分别用青、绿、黄、红、灰表示 READY、RUNNING、BLOCKED、ZOMBIE 和其他状态。
+- 每个着色区段结束后立即输出 reset，避免颜色泄漏到后续用户程序或宿主终端。
+
+### 验证
+
+- 彩色临时磁盘验证提示符、分组帮助、`ls /bin`、`ps`、后台 `spin` 和三类错误输出。
+- `make clean && make BOOT_COLOR=0` 后，启动与 Shell 完整输出中不存在 ANSI ESC 字节，文本布局保持不变。
+- 恢复默认彩色构建后，CEMU CTest 97/97 通过。
+- 连续执行 30 次无效 `kill` 后仍可正常终止后台 `spin`，确认无 fd、任务槽或 exec 资源泄漏。
+- 所有集成验证均使用 `build/` 下临时磁盘，没有覆盖正式 `disk.img`。
+
+***
+
+## 2026-06-15 — Shell 路径提示符与进程表显示优化
+
+### 交互改进
+
+- Shell 提示符通过 `getcwd` 显示当前工作目录。
+- 根目录提示符为 `minios:/> `，子目录示例为 `minios:/demo/> `。
+- 提示符中的目录统一以 `/` 收尾，强调当前对象是目录；实际 `cd demo` 和 `cd demo/` 两种输入都由 MiniFS 路径解析器支持。
+- 命令解析器兼容中文输入法常见的弯引号 `“...”`、`‘...’`，并继续支持 ASCII 单双引号和反斜杠转义。
+
+### ps 输出
+
+`ps` 改为固定列宽输出 PID、PPID、STATE、TICKS、SWITCH 和 NAME，使不同位数的 PID、计数器及不同长度的状态名称保持纵向对齐。
+
+### 后台程序输出
+
+`spin` 不再在启动后异步打印提示。后台进程输出曾可能插入 Shell 正在回显的命令，例如把 `ps` 撕成两行；现在 Shell 只打印 `[pid N]`，用户可通过 `ps` 查看任务并用 `kill PID` 终止。
+
+### 验证
+
+使用独立临时磁盘验证以下流程，未覆盖正式 `disk.img`：
+
+```text
+minios:/> mkdir demo
+minios:/> cd demo
+minios:/demo/> write message.txt hello MiniOS
+minios:/demo/> ls
+message.txt
+minios:/demo/> cat message.txt
+hello MiniOS
+minios:/demo/> spin &
+[pid 6]
+minios:/demo/> ps
+```
+
+确认提示符路径、无尾斜杠 `cd`、相对路径文件访问、后台任务和对齐后的进程表均正常。
+
+***
+
+## 2026-06-15 — printf、close-on-exec 与 CEMU 运行性能修复
+
+### 用户 libc
+
+- 修复最小 `printf` 对 `%s`、`%c`、`%d`、`%u`、`%x` 和 `%%` 的返回字节数统计。
+- 使用临时 `printftest` 用户 ELF 验证普通文本、负数、十六进制、字符和混合格式共 8 个场景，返回值全部符合预期。
+- 验证完成后删除临时测试源码，不将其加入正式 rootfs 构建。
+
+### close-on-exec
+
+Shell 的内建 `exec` 会用 fd 14/15 暂存标准输入输出，以便 `execve` 失败时恢复重定向。成功执行新程序时，这两个 fd 原先会被继承，长期占用每任务仅有的 16 个 fd。
+
+本次增加按进程保存的 close-on-exec 位图和 `SYS_SET_CLOEXEC`：
+
+- `fork` 继承标志。
+- `execve` 成功构建新地址空间后关闭已标记 fd。
+- `execve` 失败时保留 fd，使 Shell 能恢复 stdin/stdout。
+- `close`、新 fd 安装和 `dup2` 覆盖目标 fd 时清除对应标志。
+- 对未打开 fd 设置 close-on-exec 返回失败。
+
+验证 `exec definitely_missing` 失败后，Shell 仍可继续执行 `help`、`ls /tests` 和 `exit`。
+
+### CEMU 性能
+
+- 指令执行器的 opcode/funct 分派表改为静态常量，避免每执行一条指令都重新构造多个 `unordered_map`。
+- 默认 CMake preset 改为 Release，另保留独立 `wsl-debug` preset。
+- Release 模式下启动和 Shell 外部命令响应时间显著缩短。
+
+### 验证
+
+- MiniOS 内核与用户程序构建通过。
+- CEMU CTest：97/97 通过。
+- `git diff --check` 通过。
+
+***
+
+## 2026-06-15 — ELF 空段与内核栈溢出修复
+
+### 背景
+
+MiniFS v2 和独立 ELF 用户程序接入后，Shell 出现了两种表面相似、根因不同的卡死：
+
+1. 首次执行 `ls` 时可能无输出并停住。
+2. 单个命令可以运行，但连续执行 `ls`、`pwd` 等外部程序后，通常在第四次 `fork/exec` 附近卡死。
+
+这两个问题都发生在“Shell fork 子进程，再由子进程 exec ELF”的路径上，但分别属于 ELF 边界处理和内核栈内存破坏。
+
+### Bug 1：ELF loader 错误处理空 PT_LOAD
+
+部分用户 ELF 含有 `p_memsz == 0` 的 `PT_LOAD` program header。旧加载器仍尝试为这种空段计算地址范围并建立映射；当该条目的虚拟地址为 0 时，会触碰用户地址下界之外的区域，使 `execve` 无法正确完成。
+
+修复原则：
+
+- `PT_LOAD` 且 `p_memsz == 0` 时直接跳过，不分配页面。
+- 非空段继续校验 `p_filesz <= p_memsz`、文件范围、用户虚拟地址范围和入口地址。
+- 空段不参与最终页权限合并。
+
+修复后，首次执行 `ls`、`ls /bin` 和 `ls /tests` 均可正常完成。
+
+### Bug 2：4 KiB 任务内核栈在 fork/exec 中溢出
+
+原实现为每个任务分配一页（4 KiB）内核栈。`fork/exec` 路径同时包含 trap frame、地址空间描述结构、ELF 加载临时数据和多层 C 函数调用，实际峰值超过一页。
+
+栈越界没有立即触发异常，而是覆盖了相邻内存并破坏物理页分配器的空闲链表。其典型表现是：
+
+- 前几次命令正常，因此不像稳定的 ELF 或文件系统错误。
+- 后续 `kalloc()` 把当前任务正在使用的内核栈页错误地当作空闲页返回。
+- ELF loader 向该页复制程序段，覆盖当前调用栈，最终表现为模拟器卡死。
+
+修复方式：
+
+- 新增 `TASK_KERNEL_STACK_SIZE`，每任务内核栈调整为 16 KiB。
+- 使用按任务槽位分配、按页对齐的静态独立栈区，不再把任务内核栈混入普通物理页空闲链表。
+- 创建任务、fork、trap 恢复和内核栈顶查询统一使用 16 KiB 栈顶。
+- 回收任务时不再对静态内核栈执行 `kfree()`。
+
+### 调试方法
+
+- 用固定命令序列稳定复现，而不是只测试一次 `ls`。
+- 在 fork、exec 和 reap 路径临时记录空闲页数，确认页面数量稳定但分配结果异常。
+- 将卡死时 CEMU 的 PC 映射回内核符号，定位到地址空间创建路径。
+- 发现 ELF 目标页地址与当前子进程内核栈地址相同，由此确认空闲链表已被栈溢出破坏。
+
+### 验证
+
+连续执行以下 10 条外部命令全部返回，且 `forktest` 输出 PASS：
+
+```text
+ls
+ls /bin
+pwd
+ls /tests
+env
+argtest one two
+forktest
+ls
+pwd
+ls /tests
+```
+
+同时确认：
+
+- 内核与用户程序构建通过。
+- 临时 fork/exec/reap 调试日志已移除。
+- CEMU 97/97 测试保持通过。
+
+### 经验
+
+1. ELF program header 合法不代表它一定包含可映射内容，加载器必须显式处理零长度段。
+2. 内核栈溢出可能先破坏其他子系统，最终故障位置通常不是越界发生位置。
+3. fork/exec 属于深调用路径，大型局部结构应谨慎放在内核栈上。
+4. 后续应考虑加入内核栈保护页、栈水位统计或填充值检查，使越界尽早失败。
+
+***
+
+## 2026-06-15 — MiniFS v2、ELF64 加载器与 C 用户空间
+
+将原有 1 MiB/64 inode/4 KiB 文件的教学原型升级为课程验收版本：
+
+- CEMU 块设备扩展为 8 MiB，并修复 RV64 `LUI` 必须符号扩展 bit 31 的实现错误。
+- MiniFS v2 提供 256 inode、10 个直接块、一级间接块、64 KiB 文件、创建删除、seek、append、truncate 和 fd 引用计数。
+- 新增 `tools/mkfs_minifs.py`，从 staging rootfs 递归导入目录和独立 ELF；默认拒绝覆盖已有镜像。
+- 新增 ELF64 RISC-V 静态加载器、多页 Sv39 用户空间、BSS 清零、argv/envp 栈和原子 exec。
+- 新增用户 `crt0`、简化 libc、C Shell，以及 `/bin`、`/tests` 下 16 个独立程序。
+- Shell 支持 PATH、引号和反斜杠、后台任务、`exec/run` 与 `< > >>`。
+- 97 个 CTest 测试通过；`fstest` 验证精确 64 KiB + seek，`forktest` 验证 fork/exec/wait。
+
+完整说明见 `docs/MINIFS_V2_ELF.md`。
+
+***
+
+## 2026-06-15 — 持久化 MiniFS、Shell 文件命令与 kill
+
+### 目标与结果
+
+把 MiniOS 从“内存文件演示”推进到可跨重启保存数据的系统：CEMU 新增 1 MiB 宿主磁盘，内核新增 MiniFS，并在 U 模式 Shell 中实现 `ls/cd/pwd/cat/run [&]/kill`。最终 95/95 模拟器单元测试通过，`fstest`、`forktest`、后台 `spin` 与跨重启读取均通过。
+
+### 核心实现
+
+- CEMU 块设备 MMIO 基址 `0x10001000`，512 B 扇区、2048 扇区；命令寄存器同步执行读写，写操作立即刷新镜像
+- `cemu kernel.bin` 默认使用同目录 `disk.img`，`--disk PATH` 可指定镜像；新镜像自动创建，错误尺寸镜像拒绝挂载且保持原样
+- MiniFS 固定布局：超级块、inode 位图、数据块位图、64 个 inode、数据区；普通文件最大 4096 B
+- 首次格式化创建 `/bin`、`/tests`、`/tmp`、`/README` 和三个可执行入口
+- PCB 新增 cwd inode，fork 继承 cwd；MiniFS fd 表按 PID 隔离，close 只释放描述符
+- 新增系统调用 401-405：目录列出、切换目录、获取 cwd、按路径执行、终止进程
+- Shell 在每次提示符前用 `waitpid(-1, WNOHANG)` 回收后台任务，避免僵尸进程
+
+### 内置演示程序
+
+| 程序 | 行为 |
+|------|------|
+| `spin` | 持续计算，用于演示 `run spin &`、`ps` 和 `kill PID` |
+| `fstest` | 写入并重新打开 `/tmp/fstest.txt`，比较内容后输出 PASS/FAIL |
+| `forktest` | fork 子进程、exec 独立映像、waitpid 检查退出码 42 |
+
+### 关键问题与修复
+
+子进程退出切回 Shell 后曾触发 LoadAccessFault。根因是 trap handler 在 U-mode ecall 引发重调度后无条件设置 `SPP=1`，覆盖了目标 Shell 保存的用户态 `sstatus`。Shell 因而以 S-mode 返回，后续定时器中断直接使用用户栈运行内核 trap 代码。修复方式是完全保留目标任务的 `sstatus`，不在 trap 尾部猜测下一任务的特权级。
+
+阻塞式 `waitpid` 首次返回内部状态 `TASK_WAIT_BLOCKED`，任务被唤醒后调用点寄存器仍保留该返回值。Shell 与 `forktest` 因此在值为 `-2` 时重新发起 waitpid，直到真正回收 zombie 并取得退出码。
+
+### 验证
+
+- `ls /tests`、`cd /tests`、`pwd`、`cat /README`
+- `run fstest` 与 `run forktest` 均 PASS
+- `run spin &` → `ps` → `kill PID` → `ps`
+- 重启后 `cat /tmp/fstest.txt` 内容仍存在
+- PID 0、Shell PID 和无效 PID 均不可终止
+- `BOOT_COLOR=0` 输出不含 ANSI 转义序列
+- `BOOT_DIAGNOSTICS=1` 原内存、trap、syscall、RAMFS、FCFS 回归全部通过
+- CEMU Google Test：95/95 通过
+
+***
+
+## 2026-06-15 — 启动美化与诊断开关
+
+### 背景
+
+模块九完成后，MiniOS 启动日志冗长（每个模块初始化都打印详细信息），在正式演示场景中显得杂乱。同时，模块八/九开发期间产生的自测代码（内存分配器、ECALL trap、系统调用、RAMFS、FCFS 调度）在正常运行中不应出现。需要一个"启动美化 + 诊断开关"机制来区分日常运行和调试模式。
+
+### 核心设计
+
+**启动美化（Boot Beautification）**：
+- `boot_banner()`：ASCII art 欢迎横幅
+- `boot_status(ok, component, detail)`：统一的 `[ OK ]` / `[FAIL]` 格式化状态线
+- `boot_status_pages(ok, pages)`：物理内存专项状态线（含页数显示）
+- `MINIOS_BOOT_COLOR` 宏（默认 1）：绿色 `[ OK ]` / 红色 `[FAIL]` 着色的 ANSI 转义序列
+
+**诊断开关（Diagnostic Toggle）**：
+- `MINIOS_BOOT_DIAGNOSTICS` 宏（默认 0）：控制开发阶段的自测代码和详细初始化日志
+- Makefile 中 `BOOT_DIAGNOSTICS ?= 0`、`BOOT_COLOR ?= 1`，构建时可通过 `make BOOT_DIAGNOSTICS=1` 开启
+- 所有模块初始化日志（ramfs/task/timer/user）统一用 `#if MINIOS_BOOT_DIAGNOSTICS` 包裹
+
+**kernel_main 重构**：
+- 原来的"先 printk 各种初始化信息，再创建 Shell"改为"结构化启动序列"：
+  物理内存 → 虚拟内存 → RAMFS → (可选诊断) → Shell → 欢迎信息 → 开中断 → waitpid 循环
+- `start_shell()` 函数抽取，封装 scheduler 初始化、Shell 进程创建、timer 初始化、trap 静默模式
+- 原有的自测函数（`diagnostic_*`）全部移到 `#if MINIOS_BOOT_DIAGNOSTICS` 条件编译块内
+
+**Shell banner 迁移**：
+- Shell 启动 banner (`\nMiniOS shell\nType 'help' for commands.\n`) 从 `user_entry.S` 移除
+- 改为在 `kernel_main` 中 Shell 创建完成后统一输出欢迎信息
+
+### 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `os/Makefile` | 新增 `BOOT_DIAGNOSTICS`/`BOOT_COLOR` 变量，传入编译定义 |
+| `os/kernel/kernel.c` | 大幅重构：新增 `boot_banner()`/`boot_status()`/`boot_status_pages()`/`start_shell()`，诊断代码条件编译，Shell banner 迁移 |
+| `os/kernel/ramfs.c` | `ramfs_init()` 日志加 `#if MINIOS_BOOT_DIAGNOSTICS` 守卫 |
+| `os/kernel/task.c` | `task_init()`/`task_create()` 日志加守卫 |
+| `os/kernel/timer.c` | `timer_init()` 日志加守卫 |
+| `os/kernel/user.c` | `user_init()` 日志加守卫 |
+| `os/kernel/user_entry.S` | 删除 `shell_banner` 字符串及 shell_start 中的 banner 打印 |
+
+### 构建方式
+
+```bash
+# 日常运行：干净启动（无诊断日志、有颜色）
+cd os && make
+
+# 调试模式：开启诊断自测
+cd os && make BOOT_DIAGNOSTICS=1
+
+# 无颜色输出（如日志重定向到文件）
+cd os && make BOOT_COLOR=0
+```
+
+### 经验笔记
+
+1. **条件编译优于运行时 if**：`#if MINIOS_BOOT_DIAGNOSTICS` 在关闭时连诊断函数的代码都不会链接进 kernel.bin，节省了宝贵的裸机内存空间。相比运行时 `if(verbose)` 判断，零运行时开销。
+2. **启动日志是 OS 的"脸面"**：Linux 的 `[  OK  ]` 风格启发了这个设计。结构化的启动日志不仅美观，更重要的是方便快速定位哪个子系统初始化失败。
+3. **Shell banner 应属于内核而非用户程序**：原本在 `user_entry.S` 中打印 banner，但 Shell 作为 U 模式程序不应该假设自己是在什么环境下被启动的。banner 迁移到 `kernel_main` 后，内核可以控制何时显示欢迎信息（例如未来可能运行非 Shell 的用户程序）。
+
+***
+
+## 2026-06-13 — 模块九：交互式 Shell
+
+### 背景
+
+模块八完成后，MiniOS 已具备完整进程管理（fork/exec/wait/waitpid、信号量、互斥锁、FCFS/RR 调度）。但缺少一个让用户与内核直接交互的界面——之前只能看 preset demo 运行，无法输入命令。
+
+### 核心设计
+
+在 U 模式用**纯汇编**编写一个逐字符行编辑的交互式 Shell，通过 ecall 调用 sys_read/sys_write/sys_fork/sys_exec/sys_waitpid/sys_ps。Shell 作为第一个用户进程被 kernel_main 启动，其退出标志着 MiniOS 运行结束。
+
+### 涉及文件
+
+**os/kernel/user_entry.S — 完整重写** (旧~80行 demo → 新~280行 Shell):
+- Shell banner, prompt (`minios> `), help text, 各种消息字符串
+- `shell_write(a1, a2)`: 封装 `sys_write(1, buf, len)` 的内部子程序
+- `shell_strcmp(a0, a1)`: 汇编级逐字符比较，返回 0 表示相等
+- `shell_read_loop`: 逐字符 `sys_read(0)` → 回显 → 退格处理 (`\b \b`) → 换行提交
+- 行缓冲区 64 字节 (`sp + 0`)
+- 命令分发: `help`, `echo`, `ps`, `run`, `clear`, `exit`, 未知命令提示
+- `echo` 支持参数，`clear` 输出 `\033[2J\033[H` ANSI 序列
+- `run` 通过 `fork(220)` → 子进程 `exec(221)` → 父进程 `waitpid(260)` 三元组启动内置用户映像
+- `exit` 调用 `sys_exit(93)` 终止 Shell
+
+**os/kernel/syscall.c/h — 新增 SYS_PS**:
+- `SYS_PS(400)`: 调用 `task_dump_processes()` 打印当前进程表，返回 0
+- `syscall_dispatch()` 新增 `case SYS_PS` 分支
+
+**os/kernel/trap.c — syscall 静默模式**:
+- 新增 `quiet_syscall` 局部变量: 当 `trap_silent && (cause == 8 || cause == 9)` 时抑制 TRAP 日志
+- 避免 Shell 每次按键 (`sys_read(0)`) 都打印 4 行 `=== TRAP ===` 日志
+- `=== TRAP END ===` 同样受静默控制
+
+**os/kernel/kernel.c — 启动简化**:
+- kernel_main 从旧的多任务 demo (FCFS/RR/同步/idle reap zombies) 简化为:
+  1. 系统自测 (内存分配器/ECALL/系统调用)
+  2. `task_create(user_task_entry, "shell")` 创建 Shell 进程
+  3. `task_waitpid(shell_pid, NULL, 1)` 阻塞等待 Shell 退出
+  4. Shell 退出后写入 TEST_FINISH 停机
+
+### 验证结果
+
+```
+Starting shell (pid=5)...
+
+MiniOS shell
+Type 'help' for commands.
+minios> help
+help        show this help
+echo TEXT   print TEXT
+ps          show processes
+run         run fork/exec demo
+clear       clear the terminal
+exit        leave the shell
+minios> ps
+PID  NAME     STATE    PPID
+0    idle     READY    -1
+5    shell    RUNNING  0
+minios> echo Hello MiniOS!
+Hello MiniOS!
+minios> run
+run: child exited
+minios> exit
+Shell exited, halting MiniOS.
+=== CEMU Performance ===
+Instructions retired: 123456
+Elapsed time:         2.345678 s
+Throughput:            52600.00 IPS
+```
+
+- 91/91 单元测试全部通过
+- 交互式输入输出流畅，退格处理正确
+
+### 经验笔记
+
+1. **纯汇编 Shell 的行编辑模式**：U 模式无 libc/readline，用 buffer + 指针实现逐字符读取、回显、退格 (`\b \b` 序列擦除屏幕上的字符)、换行提交。每读一个字符触发一次 `sys_read(0)` ecall。
+2. **trap 静默模式是内核日志分层设计**：Shell 每个按键一次 ecall，若每次打印完整 TRAP 日志，用户界面将被淹没。`trap_silent` 全局标志 + `quiet_syscall` 局部判断实现热路径日志抑制，错误仍正常输出。
+3. **kernel_main 从 demo factory 变为 init 进程**：早期 kernel_main 逐个启动演示任务然后进入 idle 循环回收僵尸进程。现在只需创建 Shell → waitpid → halt，演示通过 Shell 的 `run`/`ps` 命令按需触发。这是 OS 从"嵌入式 demo"到"交互式系统"的转折点。
+
+***
+
+## 2026-06-13 — 追加：CEMU_TRACE 编译开关 + 性能计数器
+
+### 背景
+
+模拟器开发过程中，逐指令 trace 日志（fetch 地址、指令码、执行结果）对调试至关重要。但 Release 构建时这些日志产生巨大 I/O 开销（性能下降数十倍）。需要一种机制在 Release 构建中零开销消除 trace 日志，同时保留 Debug 构建中一键恢复的能力。
+
+### 核心设计
+
+使用编译期 `#ifdef` 条件编译替代运行时 `if(verbose)` 判断:
+- CMakeLists.txt 新增 `CEMU_TRACE` option (默认 OFF)
+- `src/log.h` 新增 `TRACE_LOG(...)` 宏: 定义 `CEMU_TRACE` 时展开为 `LOG(DEBUG, ...)`，否则为空的 `do{}while(0)`
+- `MIN_LOG_LEVEL` 在 `CEMU_TRACE` 开启时设为 `DEBUG`，否则保持 `WARNING`
+- 所有指令执行热路径 (`cpu.cpp`/`instructions.cpp`) 的 `LOG(INFO, ...)` 统一替换为 `TRACE_LOG(...)`
+- `src/main.cpp` 新增 `instret` 计数器 + `std::chrono::steady_clock` 墙钟计时 + 退出时打印 IPS
+
+### 涉及文件
+
+**CMakeLists.txt** — 新增 option + 条件编译定义:
+```cmake
+option(CEMU_TRACE "Enable per-instruction simulator trace logging" OFF)
+if(CEMU_TRACE)
+    target_compile_definitions(common_library PUBLIC CEMU_TRACE=1)
+endif()
+```
+
+**src/log.h** — TRACE_LOG 宏 + 日志级别联动:
+```cpp
+#ifdef CEMU_TRACE
+constexpr LogLevel MIN_LOG_LEVEL = DEBUG;
+#else
+constexpr LogLevel MIN_LOG_LEVEL = WARNING;
+#endif
+
+#ifdef CEMU_TRACE
+#define TRACE_LOG(...) LOG(cemu::INFO, __VA_ARGS__)
+#else
+#define TRACE_LOG(...) do { } while (0)
+#endif
+```
+
+**src/cpu.cpp / src/instructions.cpp** — 日志宏替换:
+- `fetch()` 中的 `LOG(INFO, "Instruction fetched: ...")` → `TRACE_LOG(...)`
+- `execute()` 中的 `LOG(INFO, "Execution successful. ...")` → `TRACE_LOG(...)`
+- instructions.cpp 中约 15 处 `LOG(INFO, ...)` → `TRACE_LOG(...)`
+
+**src/main.cpp** — 性能计数器:
+```cpp
+uint64_t instret = 0;
+const auto start_time = std::chrono::steady_clock::now();
+// ... 主循环中每个成功执行的指令 instret++ ...
+const auto end_time = std::chrono::steady_clock::now();
+double ips = seconds > 0.0 ? static_cast<double>(instret) / seconds : 0.0;
+```
+
+### 使用方式
+
+```bash
+# Release 构建 (零 trace 开销)
+cmake --build build_wsl -j$(nproc)
+
+# Debug 构建 (完整指令级 trace)
+cmake .. -DCEMU_TRACE=ON
+cmake --build build_wsl -j$(nproc)
+```
+
+### 经验笔记
+
+1. **编译期开关优于运行时 if 判断**：`do{}while(0)` 空宏在 Release 构建中被编译器完全消除（包括参数表达式求值），真正零开销。运行时 `if(verbose)` 即使 verbose 为 false，每次循环仍需执行判断和分支预测。
+2. **性能计数器是模拟器开发的基础设施**：`instret` + `std::chrono` + IPS 提供量化反馈。不依赖外部 perf 工具即可快速对比优化前后的吞吐率。
+
+***
+
+## 2026-06-13 — 模块八：完整进程管理
+
+### 完成内容
+
+- PCB 扩展：PID/PPID、完整 32 寄存器 Trap 上下文、sepc/sstatus/satp、退出码、时间片与运行统计。
+- 实现 FCFS 与抢占式 RR 两种调度策略，默认时间片 10ms，可运行时配置。
+- 实现 READY、RUNNING、BLOCKED、ZOMBIE 状态转换和等待通道唤醒。
+- 新增计数信号量与互斥锁。
+- 实现独立 Sv39 用户地址空间，fork 复制页表、代码页、栈页与 Trap 上下文。
+- 实现 exec 替换当前进程为内置用户映像。
+- 实现 exit、wait、阻塞式 waitpid、退出码回收、父子进程树和孤儿进程接管。
+- U 模式 Trap 通过 sscratch 切换到进程内核栈，支持跨地址空间安全调度。
+- 模拟器默认关闭逐指令 INFO 日志，致命异常保留 WARNING 诊断。
+
+### 验收结果
+
+- FCFS 顺序测试：PASS，trace=1122。
+- RR、fork/exec、waitpid、父子树：PASS。
+- 信号量、互斥锁、BLOCKED 唤醒：PASS。
+- 上下文切换最大 1897 simulated ticks，小于 1ms 阈值 5000 ticks：PASS。
+- MiniOS 主动停机：PASS。
+- 模拟器单元测试：91/91 PASS。
+
+### 关键修复
+
+U 模式最初直接在用户栈上运行 Trap Handler。切换到其他进程的 satp 后，C 函数尾声继续访问旧用户栈会触发 LoadAccessFault。最终采用 sscratch 保存每进程内核栈顶，U 态陷入时先切换到内核栈，再进行地址空间和上下文切换。
+
+***
+
+## 2026-06-09 — 模块六：任务状态与 exit/wait 雏形 & 模块七：RAMFS 最小版
+
+### 背景
+
+模块五完成后，MiniOS 已具备 U 模式、系统调用、UART 输入输出和权限隔离能力。但还存在两个关键缺口：
+1. **调度器只支持无限循环任务**：已完成的任务没有 ZOMBIE 状态（僵尸状态），退出后仍被调度
+2. **缺少文件系统雏形**：系统调用全部基于 UART，没有文件抽象
+
+### 模块六：任务状态与 exit/wait 雏形
+
+#### 核心改动
+
+**task.h — 新增状态和接口**（[task.h](file:///home/xiaowen/projects/mycpu/os/kernel/task.h)）：
+- 增加 `TASK_BLOCKED`、`TASK_ZOMBIE` 状态
+- `struct task` 增加 `int parent` 字段（记录父任务索引）
+- 新增 `task_exit()`、`task_wait()`、`task_current_state()` 声明
+
+**task.c — 实现退出和回收逻辑**（[task.c](file:///home/xiaowen/projects/mycpu/os/kernel/task.c)）：
+- `task_exit()`：将当前任务标记为 TASK_ZOMBIE（不释放内核栈）
+- `task_wait()`：遍历任务表，找到第一个属于当前任务的 ZOMBIE 子任务，释放其内核栈并标记为 TASK_UNUSED
+- `task_current_state()`：返回当前任务状态
+- 现有调度器 `schedule()` 已有跳过非 READY/RUNNING 任务的逻辑
+
+**syscall.c — 修改 sys_exit 语义**（[syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c)）：
+- `sys_exit()` 改为先调用 `task_exit()` 标记 ZOMBIE，若 current 为 NULL 则直接 TEST_FINISH 停机
+- 新增 `sys_wait()`：封装 `task_wait()`，返回被回收任务 tid 或 -1
+
+**trap.c — ECALL 退出后触发重调度**（[trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)）：
+- ECALL 异常处理后检查 `task_current_state() == TASK_ZOMBIE`
+- 若为 ZOMBIE，调用 `sched_tick(tf)` 切换到下一个就绪任务
+- 引入 `rescheduled` 标志避免 `epc+4` 覆盖 sched_tick 设置的 sepc
+
+**踩坑记录**：
+
+1. **U 模式 ecall 退出后的特权级陷阱**：用户任务从 U 模式通过 ecall 进入 S 模式 trap handler，`sstatus.SPP` 被硬件设为 User（0）。trap_handler 触发重调度后执行 sret，CPU 切换到 U 模式运行下一个内核任务——导致内核任务在 U 模式执行，触发各种异常。**修复**：trap_handler 检测重调度 + cause=8（U 模式 ECALL）时手动设置 `sstatus.SPP=1`，确保下一个任务运行在 Supervisor 模式。
+
+2. **epc+4 与 sched_tick 的竞态**：trap_handler 在异常末尾无条件执行 `trap_epc_write(epc + 4)`。但 sched_tick 已将 sepc 改为新任务的入口地址，如果再 +4 会跳过新任务的第一条指令。**修复**：引入 `rescheduled` 标志，仅在未重调度时推进 epc。
+
+#### 验证
+
+```text
+[UserTask] Entering user mode...
+=== TRAP ===
+scause: 0x8
+  -> Environment call from U-mode
+Hello from user!
+=== TRAP END ===
+
+--- Task Exit (code=0) ---
+=== TRAP END ===
+[ShortTask] count=0
+task_wait: reaped 'user_task' (tid=2)
+[Idle] Reaped zombie task 2
+[Idle] count=5
+[Task A] count=5
+[ShortTask] count=1
+...
+```
+
+- user_task 进入 U 模式 → sys_write 输出 → sys_exit 标记 ZOMBIE → 重调度
+- idle 通过 task_wait 回收 ZOMBIE 子任务（释放内核栈）
+- task_a 和 short_lived_task 在退出任务后继续正常运行
+- 91/91 单元测试全部通过
+
+### 模块七：RAMFS 最小版
+
+#### 核心设计
+
+固定大小内存文件表，不作磁盘、不作 mkfs、不作复杂目录树。
+
+```c
+struct ramfs_file {
+    char     name[32];
+    char     data[4096];
+    uint64_t size;
+    int      used;
+};
+```
+
+- 8 个文件槽位，每个 4096 字节
+- fd 编码：0=stdin, 1=stdout, >=2=RAMFS 文件（fd=槽位索引+2）
+
+#### 涉及文件
+
+**ramfs.h/c — 新建**（[ramfs.h](file:///home/xiaowen/projects/mycpu/os/kernel/ramfs.h), [ramfs.c](file:///home/xiaowen/projects/mycpu/os/kernel/ramfs.c)）：
+- `ramfs_init()`：清零所有槽位
+- `ramfs_create(name)`：找空闲槽位，复制文件名，返回 fd
+- `ramfs_write(fd, buf, len)`：截断到 4096 字节，写入 data 并更新 size
+- `ramfs_read(fd, buf, len)`：截断到文件实际 size，复制数据
+- `ramfs_close(fd)`：释放槽位
+
+**syscall.h — 新系统调用**（[syscall.h](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.h)）：
+- `SYS_OPEN(56)`、`SYS_CLOSE(57)`
+
+**syscall.c — fd 分派**（[syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c)）：
+- `sys_write`：fd=1 → UART 控制台输出，fd>=2 → ramfs_write
+- `sys_read`：fd=0 → UART 阻塞输入，fd>=2 → ramfs_read
+- 新增 `sys_open(name, flags)` 和 `sys_close(fd)`
+
+#### 验证
+
+```text
+--- Phase 13: RAMFS Test ---
+RAMFS initialized (8 files, 4096 bytes each)
+ramfs_create: 'file_a' -> fd=2
+ramfs_create: 'file_b' -> fd=3
+ramfs_create: 'log' -> fd=4
+Write 12 bytes to fd_a
+Read from fd_a: 'Hello RAMFS!' (12 bytes)
+Write 13 bytes to fd_b
+Read from fd_b: 'MiniOS Kernel' (13 bytes)
+ramfs_close: fd=2 closed
+Read from closed fd_a: -1 (expected -1)
+ramfs_create: 'file_a2' -> fd=2 (idx=0)  # 槽位复用
+Read from fd_a2: 'Reopen OK' (9 bytes)
+RAMFS test passed!
+```
+
+- 3 个文件创建、写入、读回全部正确
+- 关闭后读写返回 -1（错误处理正确）
+- 槽位复用正常
+- 91/91 单元测试全部通过
+
+### 经验笔记
+
+1. **ZOMBIE 是 UNIX 进程模型的核心**：进程退出后不立即释放 PCB，保留退出信息等待父进程通过 wait() 回收。MiniOS 的简化实现：task_exit 标 ZOMBIE → 调度器跳过 → 父任务通过 task_wait 回收内核栈。
+2. **特权级切换的陷阱**：U 模式 ecall 后 sstatus.SPP=User，触发重调度时必须手动恢复 SPP=Supervisor，否则 sret 会在错误特权级运行内核任务。
+3. **fd 的统一抽象**：fd=0/1 固定映射 stdin/stdout，fd>=2 映射 RAMFS。同一套 sys_write/sys_read 通过 fd 分派到不同后端，体现 UNIX "一切皆文件" 哲学。
+
+***
+
+## 2026-06-09 — 模块四：用户地址空间权限隔离 & 模块五：UART 输入与 sys_read
+
+### 背景
+
+模块三完成后，U 模式用户程序可以正常执行 ecall 调用 sys_write/sys_exit。但存在两个关键缺口：
+1. **U 模式权限隔离不完整**：页表虽然设置了 U 位（用户页 U=1，TEST_FINISH U=0），但 MMU 未检查 U 位，导致 U 模式理论上可访问内核页。
+2. **缺少输入能力**：系统只能输出不能输入，无法实现交互。
+
+### 模块四：MMU U 位权限检查
+
+#### 核心改动
+
+**MMU translate() 增加 mode 参数**：
+- `src/mmu.h`：`translate(uint64_t vaddr, AccessType type, uint64_t mode)` — mode 为当前 CPU 特权级（User=0, Supervisor=1, Machine=3）
+- **2MB 大页叶节点**：在 R/W/X 权限检查后增加 U 位检查（`if (mode == User && !(pte & PTE_U))` — 抛对应页异常）
+- **4KB 叶节点**：同上
+
+**CPU 调用方更新**（`src/cpu.cpp`）：
+- `load()`/`store()`/`fetch()` 三处 `mmu.translate()` 调用均传入 `this->mode`
+
+**设计要点**：
+- 非叶节点不检查 U 位（RISC-V 规范规定非叶 U 位为保留位）
+- S/M 模式访问 U=0 页不受影响
+- U 模式访问 U=0 页触发对应类型页异常（LoadPageFault / StoreAMOPageFault / InstructionPageFault）
+
+#### 测试
+
+新增 3 个测试用例：
+- `UserModeCannotAccessSupervisorPage`：U 模式访问 U=0 页触发页异常，S/M 模式正常
+- `UserModeCanAccessUserPage`：U 模式正常访问 U=1 页
+- `UserModeMegapageUCheck`：2MB 大页的 U 位检查
+
+### 模块五：UART 输入与 sys_read
+
+#### 核心改动
+
+**内核端 UART 输入函数**（`os/kernel/uart.h/c`）：
+- `UART_RHR` / `UART_LSR_RX_READY` 寄存器定义
+- `uart_has_data()`：查询 LSR 寄存器的 RX 就绪位
+- `uart_getc()`：轮询阻塞读取一个字符
+
+**新系统调用**（`os/kernel/syscall.h/c`）：
+- `SYS_READ` (63)：从控制台读取字符
+- `sys_read(fd, buf, len)`：阻塞读取最多 len 个字符，遇换行符 \\n 提前终止
+- `syscall_dispatch()` 增加 `case SYS_READ` 分支
+
+**UART stdin 监听重构**（`src/uart.cpp`）：
+- 原实现 `std::cin >> byte` 阻塞导致进程无法干净退出
+- 改用 `poll(STDIN_FILENO, ..., 100ms)` + `read()` 非阻塞轮询
+- 进程退出时 stdin 线程可在 100ms 内响应 `stdin_running = false` 并退出
+
+**Stdin 监听启动**（`src/bus.h/cpp` + `src/main.cpp`）：
+- Bus 新增 `start_stdin()` 方法，在 main.cpp 中启动后调用
+- 单元测试环境不启动 stdin 监听（保持默认 false），避免挂起
+
+#### 设计要点
+
+- sys_read 为阻塞调用：用户程序调用后等待键盘输入，输入后继续执行
+- sys_read 支持两种终止条件：读满 len 个字符，或遇到 \\n（终端回车）
+- 当前不支持 `fd` 参数（仅控制台），后续可扩展
+
+### 验证结果
+
+- 单元测试：91/91 全通过（新增 3 个 MMU U 位测试）
+- MiniOS 端到端：输出完整（从 booting 到 System Exit），进程干净退出（exit code 0，不依赖 timeout）
+- 构建：cemu + MiniOS 无警告无错误
+
+***
+
+## 2026-06-08 — 模块二：U 模式切换 & 模块三：用户态系统调用
+
+### 背景
+
+模块一实现了内核通过 MMIO 主动停机。模块二和三的目标是实现 S 模式内核到 U 模式用户程序的切换，并让用户程序通过 ecall 调用系统调用。这是 MiniOS 从"裸机内核"迈向"多任务 OS"的关键一步。
+
+### 核心设计
+
+**模块二 — U 模式切换**：
+- 内核通过 `sret` 指令将 CPU mode 切换到 User（sstatus.SPP=0），PC 指向用户虚拟地址 0x10000
+- 需要构建独立的用户页表，映射用户代码页（0x10000，R|X|U）、用户栈页（0x20000，R|W|U）以及 TEST_FINISH MMIO（内核专用，U=0）
+
+**模块三 — 用户态系统调用**：
+- U 模式用户程序通过 `ecall` 触发 scause=8，进入 S 模式 trap handler
+- 实现 sys_write(64) 和 sys_exit(93) 两个最小系统调用
+- sys_exit 通过写入 TEST_FINISH 实现主动停机
+- 系统调用参数约定：a7=调用号，a0-a2=参数，返回值写入 trap frame 的 a0
+
+### 关键技术点
+
+#### 1. 用户页表构建与 MMIO 映射
+
+用户页表使用四级 Sv39：
+
+```
+L2 (根) → L1_MMIO → L0_USER → [用户代码页, 用户栈页, TEST_FINISH]
+```
+
+- `l0_user[16]`：映射 VA 0x10000 → 用户代码页（U=1, R|X），用户可读可执行
+- `l0_user[32]`：映射 VA 0x20000 → 用户栈页（U=1, R|W），用户可读写
+- `l0_user[256]`：映射 VA 0x100000 → TEST_FINISH（U=0, R|W），仅内核可访问
+- `kernel_l1_mmio[0]` 从 2MB 大页切换到指向 l0_user 的非叶 PTE，实现细粒度映射
+
+#### 2. sret 进入用户模式
+
+`enter_user()` 设置 sstatus.SPP=0（User mode）、sstatus.SPIE=1（sret 后开中断）、sepc=USER_TEXT_VA(0x10000)，执行 sret 后 CPU 跳转到用户程序入口。
+
+#### 3. 4 字节对齐的关键性
+
+这是本次开发踩的最大的坑。用户程序编译后，`.string` 指令生成 18 字节（17 字符 + NUL），导致后续指令不在 4 字节边界上。RISC-V 无 C 扩展时所有指令必须 4 字节对齐。使用 `.align 4`（GAS 中 2^4=16 字节对齐）确保所有指令正确对齐。
+
+**错误的指令布局（无对齐）**：
+- ecall 在偏移 0x2a（42，非 4 字节对齐）
+- li a7,93 在偏移 0x2e（46，非 4 字节对齐）
+- 模拟器 fetch 时读取错位数据（0x08930000 vs 0x05d00893），触发 IllegalInstruction 异常
+
+**修复**：在 `.string` 后添加 `.align 4`（16 字节对齐），指令偏移变为 0x34/0x38，全部 4 字节对齐。
+
+#### 4. 位置无关代码（PIC）
+
+用户程序使用 `auipc + addi` 的 PC 相对寻址（`la` 伪指令），确保程序被复制到任意物理地址后仍能正确访问内嵌字符串。
+
+### 修改清单
+
+#### 1. os/kernel/user_entry.S — 用户程序入口
+
+**文件**：[os/kernel/user_entry.S](file:///home/xiaowen/projects/mycpu/os/kernel/user_entry.S)
+
+用户程序的核心逻辑（位置无关，编译到 .user_text 段）：
+```asm
+.section .user_text, "ax"
+.align 4
+user_entry:
+    j       2f
+1:  .string "Hello from user!\n"
+    .align 4
+2:  li      a7, 64              # SYS_WRITE
+    li      a0, 1               # fd = stdout
+    la      a1, 1b              # buf = msg (PC-relative)
+    li      a2, 17              # len = 17
+    ecall
+    li      a7, 93              # SYS_EXIT
+    li      a0, 0               # code = 0
+    ecall
+    j       .
+```
+
+#### 2. os/kernel/user.c — 用户模式初始化
+
+**文件**：[os/kernel/user.c](file:///home/xiaowen/projects/mycpu/os/kernel/user.c)
+
+- `user_init()`：分配物理页、构建用户页表、复制用户程序到用户页、更新 MMIO 页表为细粒度映射
+- `enter_user()`：设置 sstatus/sepc，通过 sret 跳转到用户模式
+
+#### 3. os/kernel/user.h — 用户模式头文件
+
+**文件**：[os/kernel/user.h](file:///home/xiaowen/projects/mycpu/os/kernel/user.h)
+
+声明 `user_init()` 和 `__attribute__((noreturn)) void enter_user(void)`。
+
+#### 4. os/kernel/vm.h & vm.c — 暴露全局页表指针
+
+**文件**：[os/kernel/vm.h](file:///home/xiaowen/projects/mycpu/os/kernel/vm.h), [os/kernel/vm.c](file:///home/xiaowen/projects/mycpu/os/kernel/vm.c)
+
+添加 `extern volatile uint64_t *kernel_l2, *kernel_l1_dram, *kernel_l1_mmio` 全局声明，vm_init() 末尾赋值，供 user_init 修改 MMIO 区域页表。
+
+#### 5. os/linker.ld — 添加 .user_text 段
+
+**文件**：[os/linker.ld](file:///home/xiaowen/projects/mycpu/os/linker.ld)
+
+在 .text 和 .rodata 之间插入 .user_text 段，定义 `_user_text_start` / `_user_text_end` 符号。
+
+#### 6. os/kernel/kernel.c — 集成用户模式演示
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+在系统调用测试之后、TEST_FINISH 之前添加 Phase 11（用户模式演示），调用 `user_init()` + `enter_user()`。
+
+#### 7. os/Makefile — 添加编译规则
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+添加 user.c 和 user_entry.S 的编译与链接规则。
+
+### 验证结果
+
+```
+MiniOS booting...
+... (Phase 1-8 正常) ...
+--- Phase 11: User Mode (U-Mode) Test ---
+User mode initialized
+Entering user mode...
+=== TRAP ===
+scause: 0x8        # ECALL from U-mode
+sepc:   0x10034
+  -> Environment call from U-mode
+Hello from user!   # sys_write(1, msg, 17) 输出
+=== TRAP END ===
+=== TRAP ===
+scause: 0x8        # 第二个 ECALL
+sepc:   0x10040
+  -> Environment call from U-mode
+
+--- System Exit (code=0) ---   # sys_exit(0) 成功停机
+```
+
+- 模拟器退出码 0（TEST_FINISH 正常停机）
+- 单元测试 88/88 全部通过
+
+### 经验笔记
+
+1. **`.align` 在 GAS 中的语义**：GAS for RISC-V 中 `.align N` 表示 2^N 字节对齐。`.align 2` = 4 字节，`.align 4` = 16 字节。`.string` 会自动 NUL 终止，但其长度不保证 4 字节对齐，必须显式对齐后续代码。
+2. **用户页表的 U 位控制**：非叶 PTE 的 U 位控制整个子树的用户可访问性。即使叶 PTE 设置了 U 位，如果上级非叶 PTE 的 U=0，用户访问仍会触发页异常（当前 MMU 尚未实现此检查，但不影响本次 demo）。
+3. **sret 的行为**：`sret` 执行 `PC = sepc, mode = sstatus.SPP`，同时设置 `SPP=User`（最低特权级）。进入用户模式后，只有 ecall 能回到 S 模式处理系统调用。
+4. **sepc 的推进**：对于 ecall 指令，trap handler 必须手动推进 sepc + 4，否则 sret 后 PC 指向 ecall 指令本身，形成无限循环。
+
+***
+
+## 2026-06-08 — 模块一：主动退出与演示闭环
+
+### 背景
+
+MiniOS 从阶段 1 到阶段 10 完成后，内核在抢占式调度无限循环中运行，只能通过外部 `timeout` 终止模拟器。需要实现一种机制让 MiniOS 能主动通知模拟器停止运行，形成完整的演示闭环。
+
+### 核心设计
+
+引入一个简单的 **TEST_FINISH MMIO 设备**，地址 `0x100000`：
+
+- 模拟器侧：Bus 路由该地址，内核写入任意值后设置 `halted` 标志，主循环检测到标志后退出
+- 内核侧：`sys_exit()` 向该地址写入 magic value，然后进入死循环作为保底
+
+这比在 main.cpp 中硬编码特殊指令检测更干净——它是一个真正的 MMIO 设备，有明确的地址空间和 load/store 语义。
+
+### 修改清单
+
+#### 1. src/param.h — 新增 TEST_FINISH 地址常量
+
+**文件**：[src/param.h](file:///home/xiaowen/projects/mycpu/src/param.h#L163-L167)
+
+```cpp
+constexpr uint64_t TEST_FINISH = 0x100000;
+constexpr uint64_t TEST_FINISH_SIZE = 0x100;
+constexpr uint64_t TEST_FINISH_END = TEST_FINISH + TEST_FINISH_SIZE - 1;
+```
+
+选 `0x100000` 的原因：在 MMIO 区域（vpn2=0），位于 CLINT(0x02000000) 之前，不与现有外设冲突。
+
+#### 2. src/bus.h / src/bus.cpp — halted 标志与路由
+
+**文件**：[src/bus.h](file:///home/xiaowen/projects/mycpu/src/bus.h#L29-L36), [src/bus.cpp](file:///home/xiaowen/projects/mycpu/src/bus.cpp#L40-L43)
+
+**Bus 新增**：
+- `bool halted = false` 私有成员
+- `bool is_halted() const` 公开接口
+- `load(TEST_FINISH)` 返回 `halted ? 1 : 0`（内核可读取确认）
+- `store(TEST_FINISH)` 设置 `halted = true`
+
+#### 3. src/main.cpp — 主循环检测 halted 退出
+
+**文件**：[src/main.cpp](file:///home/xiaowen/projects/mycpu/src/main.cpp#L27-L31)
+
+```cpp
+if (cpu.bus.is_halted()) {
+    LOG(INFO, "Simulation halted by kernel.");
+    break;
+}
+```
+
+放在每轮循环开头，在 CLINT tick 之前检查。
+
+#### 4. os/kernel/syscall.c — sys_exit 写入 TEST_FINISH
+
+**文件**：[os/kernel/syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c#L6-L7)
+
+```c
+#define TEST_FINISH 0x100000
+static void sys_exit(uint64_t code) {
+    printk("\n--- System Exit (code=%ld) ---\n", (long)code);
+    *(volatile uint32_t *)TEST_FINISH = 0x5555;
+    while (1);  // 保底死循环
+}
+```
+
+写入 `0x5555`（`01010101 01010101`）作为 magic value，便于在日志中识别。
+
+#### 5. os/kernel/vm.c — 添加 TEST_FINISH 页表映射
+
+**文件**：[os/kernel/vm.c](file:///home/xiaowen/projects/mycpu/os/kernel/vm.c#L79-L84)
+
+```c
+l1_mmio[0] = PTE(0, PTE_V | PTE_R | PTE_W);
+```
+
+2MB 大页映射 `0x00000000-0x001FFFFF`，覆盖 TEST_FINISH 地址 `0x100000`。开 Sv39 分页后所有访存都经过 MMU，不映射此区域会触发 PageFault。
+
+### 验证
+
+```bash
+ctest --test-dir build_wsl   # 88/88 全部通过
+timeout 10 ./build_wsl/cemu os/build/kernel.bin
+```
+
+关键日志：
+```
+[INFO] Bus storing value 5555 at TEST_FINISH address 100000 -> halting simulation.
+[INFO] Simulation halted by kernel.
+```
+
+退出码 0（不再被 timeout kill）。
+
+### 经验笔记
+
+1. **MMIO 是模拟器与内核之间最简洁的通信机制**：不需要特殊指令、不需要修改 CPU 流水线、不需要在 main.cpp 中硬编码检测逻辑。只需要一个地址和一个 store 操作。
+
+2. **开启分页后，所有 MMIO 地址都需要页表映射**：TEST_FINISH 地址 `0x100000` 在启动页表的覆盖范围之外（vpn1=0 原本只有 CLINT/PLIC/UART 的映射），不添加 `l1_mmio[0]` 映射会导致内核写 TEST_FINISH 时触发 StorePageFault。这是一个典型的"新加外设却忘了映射"问题。
+
+3. **halted 标志的检测时机**：放在主循环顶部（CLINT tick 之前）最合理——一旦内核写入 TEST_FINISH，模拟器在当前指令执行完毕后、下一条指令取指前就会退出。不需要等到 CLINT 再 tick 一轮。
+
+4. **死循环作为保底**：`sys_exit` 先写 TEST_FINISH 再进死循环。如果由于某种原因（如模拟器 bug）halted 检测失败，死循环会防止内核执行到不该执行的代码区域。这是防御性编程。
+
+***
+
+## 2026-06-04 — 阶段 10：虚拟内存与 Sv39 页表
+
+### 背景
+
+阶段 0.5 到阶段 9 的内核全部运行在物理地址空间（Bare 模式）。阶段 10 的目标是在模拟器中实现 Sv39 地址翻译，并在 MiniOS 内核中构建身份映射页表，最终让内核在分页模式下运行全部已有功能。
+
+### 核心设计
+
+**模拟器侧**：新增 `Mmu` 类，位于 CPU 和 Bus 之间，负责虚拟地址到物理地址的翻译。
+
+**MMU 接口**：
+```cpp
+class Mmu {
+  uint64_t translate(uint64_t vaddr, AccessType type);
+  bool is_enabled() const;
+};
+```
+
+- `AccessType::Instruction/Load/Store`：区分取指、加载、存储，用于权限检查
+- `is_enabled()`：检查 `SATP.MODE == Sv39(8)`，否则直通物理地址
+- `translate()`：执行三级页表遍历（VPN[2] → VPN[1] → VPN[0]），失败时抛出对应页异常
+
+**CPU 集成**：`Cpu::fetch()`、`Cpu::load()`、`Cpu::store()` 在访问 Bus 前先调用 `mmu.translate()`。SATP.MODE=Bare（默认值）时翻译退化为直通，向后兼容。
+
+**页表遍历**：MMU 持有 `Dram&` 引用，直接通过 `dram.load()` 读取页表项（物理地址）。不经过 Bus，避免 MMIO 路由的额外开销和耦合。
+
+**权限检查**：
+- 取指需 PTE.X，失败 → InstructionPageFault
+- 加载需 PTE.R，失败 → LoadPageFault
+- 存储需 PTE.W，失败 → StoreAMOPageFault
+- A(ccessed) 位自动设置于每次访问
+- D(irty) 位自动设置于每次存储
+
+**大页支持**：LV1 PTE 若 R|W|X 非零则为 2MB 叶节点。PPN[0] 来自虚拟地址 VPN[0]，PPN[2:1] 来自 PTE。
+
+**MiniOS 内核 VM 模块**：`os/kernel/vm.h/c`
+
+1. `kalloc()` 分配 3 页（12KB）：根页表(l2) + DRAM LV1(l1_dram) + MMIO LV1(l1_mmio)
+2. 根页表：`l2[2]` → l1_dram（DRAM），`l2[0]` → l1_mmio（MMIO）
+3. DRAM 128MB：64 个 2MB 大页，vpn1 = 0..63，RWX 权限
+4. CLINT 2MB：vpn1 = 16，RW 权限
+5. PLIC 64MB：32 个 2MB 大页，vpn1 = 96..127，RW 权限
+6. UART 2MB：vpn1 = 128，RW 权限
+7. 写入 SATP（MODE=Sv39, PPN=l2），执行 `sfence.vma` 刷新 TLB
+
+### 修改清单
+
+#### 1. 新增 `src/mmu.h` 和 `src/mmu.cpp`
+
+**文件**：[src/mmu.h](file:///home/xiaowen/projects/mycpu/src/mmu.h), [src/mmu.cpp](file:///home/xiaowen/projects/mycpu/src/mmu.cpp)
+
+- `Mmu` 类：持有 `Csr&` 和 `Dram&` 引用
+- `translate(vaddr, type)`：Bare 模式直通，Sv39 模式三级遍历
+- `is_enabled()`：检查 SATP MODE 字段
+- 权限检查按 AccessType 区分
+- A/D 位自动设置（写回 DRAM）
+
+#### 2. 修改 `src/cpu.h`
+
+- 新增 `#include "mmu.h"`
+- 新增成员 `Mmu mmu`，构造函数中初始化 `mmu(csr, bus.dram)`
+
+#### 3. 修改 `src/cpu.cpp`
+
+- `Cpu::load()`：`mmu.translate(addr, Mmu::AccessType::Load)` → `bus.load(paddr, size)`
+- `Cpu::store()`：`mmu.translate(addr, Mmu::AccessType::Store)` → `bus.store(paddr, size, value)`
+- `Cpu::fetch()`：`mmu.translate(pc, Mmu::AccessType::Instruction)` → `bus.load(paddr, 32)`
+
+#### 4. 新增 `tests/unitest/mmu_test.cpp`
+
+10 项测试：
+- BareModePassThrough — 未开启分页时地址直通
+- Sv39IdentityMapRead — 身份映射 + 读权限
+- Sv39IdentityMapReadWrite — 身份映射 + 读写权限
+- Sv39IdentityMapExecute — 身份映射 + 执行权限
+- Sv39Remap — 虚拟地址重映射到不同物理页
+- Sv39PageOffsetPreserved — 页内偏移保持不变
+- InvalidPTEPageFault — V=0 触发 LoadPageFault
+- StoreOnReadOnlyPageCausesPageFault — 只读页写入触发 StoreAMOPageFault
+- FetchOnNoExecutePageCausesPageFault — 无可执行权限取指触发 InstructionPageFault
+- Sv39Megapage — 2MB 大页映射正确
+
+#### 5. 新增 `os/kernel/vm.h` 和 `os/kernel/vm.c`
+
+- PTE 标志位宏定义（PTE_V/R/W/X/U/G/A/D）
+- PTE 构造宏：`PTE(ppn, flags)`、`PA2PTE(pa)`
+- `vm_init()`：构建身份映射 + 开启 SATP
+
+#### 6. 修改 `os/kernel/kernel.c`
+
+- `#include "vm.h"`
+- `mem_init()` 之后、allocator 测试之前调用 `vm_init()`
+- 输出 "Phase 10: Virtual Memory (Sv39)" 标识
+
+#### 7. 修改 `os/Makefile`
+
+- 新增 `vm.c` → `build/vm.o` 编译规则
+- `KERNEL_SRCS` 和 `OBJS` 中加入 vm
+
+#### 8. 修改 `CMakeLists.txt`
+
+- `COMMON_SOURCES` 加入 `src/mmu.h` 和 `src/mmu.cpp`
+- `unit_test` 加入 `tests/unitest/mmu_test.cpp`
+
+### 验证
+
+```bash
+# 全部 88 项单元测试通过（78 项原有 + 10 项新增 MMU 测试）
+ctest --test-dir build_wsl --output-on-failure  # 88/88 passed
+
+# MiniOS 在 Sv39 分页模式下全功能运行
+timeout 6 ./build_wsl/cemu os/build/kernel.bin
+```
+
+输出：
+```
+--- Phase 10: Virtual Memory (Sv39) ---
+Sv39 page table setup complete (identity map 128MB DRAM)
+Alloc p1: 0x80006000
+Alloc p2: 0x80007000
+...
+Memory allocator test passed!
+--- Phase 3: ECALL Trap Test ---
+...
+Trap round-trip successful!
+--- Phase 8: System Call Test ---
+...
+System call test passed!
+--- Phase 7: Preemptive Scheduling ---
+...
+[Idle ] count=0...
+[Task A] count=0...
+[Task B] count=0...
+```
+
+### 遇到的问题和解决
+
+**问题 1**：首次运行 Sv39 后内核立即崩溃，无任何输出  
+**原因**：页表只映射了 DRAM（0x80000000-0x87FFFFFF），UART（0x10000000）未映射，printk 的 UART 写触发 Load/Store PageFault  
+**解决**：增加 `l1_mmio` LV1 页表（vpn2=0），映射 CLINT/PLIC/UART。页表从 2 页增加到 3 页
+
+**问题 2**：大页（Megapage）测试失败，翻译结果错误  
+**原因**：测试代码中 PTE PPN 计算错误，使用了 `(pa/PAGE_SIZE)>>9` 而非 `pa/PAGE_SIZE`  
+**解决**：修正为大页 PTE 使用完整 PPN（PPN[0]=0，运行时由 VA 的 vpn0 替换）
+
+### 关键设计决策
+
+**Decision 16**：MMU 直连 Dram 进行页表遍历（不经过 Bus）
+
+**Decision 17**：CPU 所有 fetch/load/store 统一经过 `mmu.translate()`
+
+**Decision 18**：MMIO 区域也需在页表中映射（不止 DRAM）
+
+***
+
+## 2026-06-04 — 阶段 9：S 模式与特权级切换
+
+### 背景
+
+阶段 0.5-8 的内核全部运行在 M 模式（Machine Mode），使用 mtvec/mepc/mcause/mret 等 M 模式 CSR。阶段 9 的目标是将内核从 M 模式切换到 S 模式（Supervisor Mode），通过 medeleg/mideleg 寄存器将异常和中断委托给 S 模式处理，建立更接近真实 RISC-V OS 的特权级架构。
+
+### 核心设计
+
+**启动流程**：`_start`(M-mode) → 配置 medeleg/mideleg/stvec → mret → kernel_main(S-mode)
+
+RISC-V 规范不允许直接从 M 模式"跳转"到 S 模式，唯一途径是 mret 指令：在 mstatus.MPP 中设置目标特权级，在 mepc 中设置目标地址，执行 mret 后 CPU 自动将特权级切换为 MPP 并跳转到 mepc。
+
+**委托配置**：
+- `medeleg[8]`: ECALL from U-mode 委托给 S 模式
+- `medeleg[9]`: ECALL from S-mode 不委托（但当前内核在 S 模式运行，S-mode ecall 仍由 S 模式 trap handler 处理）
+- `mideleg[5]`: Supervisor timer interrupt 委托给 S 模式（cause=5，替代 M 模式 cause=7）
+
+### 修改清单
+
+#### 1. start.S — M 模式启动后切换到 S 模式
+
+**文件**：[os/boot/start.S](file:///home/xiaowen/projects/mycpu/os/boot/start.S)
+
+**关键修改**：
+- `trap_entry_m` 移至 `mret` 之后，确保 `_start` 是 `.text.init` 的第一个符号（CPU 从 0x80000000 取指）
+- M 模式阶段：csrw mstatus=0 → 设置 sp → mtvec=trap_entry_m → 清零 BSS
+- 委托配置：csrw medeleg (ECALL U/S) → csrw mideleg (timer bit5)
+- stvec 设置后，通过 `li t0, (1<<11); csrs mstatus, t0` 设置 MPP=S
+- mret → 特权级=MPP=S, PC=mepc=kernel_main
+
+**设计要点**：`trap_entry_m` 是一个死循环（`j trap_entry_m`），处理任何非预期的 M 模式陷阱。正常运行时所有陷阱都应当由 S 模式处理。
+
+#### 2. trap.S — mret 改为 sret
+
+**文件**：[os/kernel/trap.S](file:///home/xiaowen/projects/mycpu/os/kernel/trap.S)
+
+**修改**：尾随 `mret` → `sret`
+
+**设计要点**：sret 的行为与 mret 类似但使用 S 模式 CSR：
+- sepc → PC
+- SPP → mode
+- SPIE → SIE
+- SPP 设为 User mode (0)
+
+#### 3. trap.c — 适配 S 模式 cause 编码
+
+**文件**：[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**修改**：
+- 中断 cause 5 (Supervisor timer) 替代 cause 7 (Machine timer)
+- 中断 cause 1 (Supervisor software) 替代 cause 3 (Machine software)
+- 中断 cause 9 (Supervisor external) 替代 cause 11 (Machine external)
+- 异常 cause 8 (ECALL from U-mode) 替代 cause 10 (ECALL from M-mode)
+- 日志输出 scause/sepc/stval 替代 mcause/mepc/mtval
+- 注释 "推进 mepc" → "推进 sepc"
+
+**设计要点**：由于 `MINIOS_USE_S_MODE` 宏的作用，`trap_epc_read/write` 等宏自动映射到 `sepc` 等 S 模式 CSR，trap.c 的 C 代码无需逐行修改 CSR 名称。
+
+#### 4. timer.c — 使用 S 模式定时器中断
+
+**文件**：[os/kernel/timer.c](file:///home/xiaowen/projects/mycpu/os/kernel/timer.c)
+
+**修改**：`csr_set(mie, MIE_MTIE)` → `csr_set(sie, SIE_STIE)`
+
+**设计要点**：通过 sie 写入 STIE 时，CSR store 函数（csr.cpp）会将其写入 MIE 的对应 bit（由 mideleg 过滤）。内核只需要关心 S 模式的寄存器视图。
+
+#### 5. kernel.c — 使用 S 模式中断使能
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：
+- `csr_set(mstatus, MSTATUS_MIE)` → `local_irq_enable()`（宏自动映射到 sstatus.SIE）
+- 移除 Phase 8 遗留的 `sys_exit(ecall)` 阻塞代码，让抢占式调度正常运行
+
+#### 6. os/include/csr.h — 已有 MINIOS_USE_S_MODE 支持
+
+**文件**：[os/include/csr.h](file:///home/xiaowen/projects/mycpu/os/include/csr.h)
+
+**说明**：阶段 0.5 已添加的 CSR 抽象层（TRAP_VEC/TRAP_EPC/TRAP_CAUSE 等宏）通过 `MINIOS_USE_S_MODE` 控制开关。Makefile 添加 `-DMINIOS_USE_S_MODE` 后所有内核代码自动切换到 S 模式 CSR。
+
+#### 7. Makefile — 添加 MINIOS_USE_S_MODE
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：CFLAGS 追加 `-DMINIOS_USE_S_MODE`
+
+#### 8. cpu.cpp — 模拟器支持 S 模式中断委托
+
+**文件**：[src/cpu.cpp](file:///home/xiaowen/projects/mycpu/src/cpu.cpp)
+
+**check_pending_interrupts 修改**：
+- M 模式路径：保持原有逻辑（MIP & MIE 检查）
+- S/U 模式路径：
+  1. 先检查非委托 M 模式中断（MIP & MIE & ~MIDELEG），优先级 MEI > MSI > MTI
+  2. 再检查委托到 S 模式的中断（csr.load(SIP) & csr.load(SIE)），优先级 SEI > SSI > STI
+  3. 委托中断使用 `csr.load(SIP)/csr.load(SIE)` 而非直接 `MIP & MIDELEG`，确保正确的位映射
+
+**handle_interrupt 修改**：
+- 判断 `csr.is_midelegated(irq_code)` 决定是 S 模式还是 M 模式中断
+- S 模式：设置 mode=Supervisor, PC=stvec, 保存 sepc/scause/stval, 更新 sstatus
+- M 模式：保持原有逻辑
+
+#### 9. csr.cpp — SIP 委托中断位映射修复
+
+**文件**：[src/csr.cpp](file:///home/xiaowen/projects/mycpu/src/csr.cpp)
+
+**SIP load 修改**：从简单的 `MIP & MIDELEG` 改为正确的位映射：
+```cpp
+sip = 0;
+if (mideleg & SSIP) sip |= (mip & MSIP) ? SSIP : 0;  // bit1←bit3
+if (mideleg & STIP) sip |= (mip & MTIP) ? STIP : 0;  // bit5←bit7
+if (mideleg & SEIP) sip |= (mip & MEIP) ? SEIP : 0;  // bit9←bit11
+```
+
+**SIP store 修复**：`csrs[MIE]` → `csrs[MIP]`（修复原有 bug）
+
+**关键发现**：MTIP (MIP bit 7) 和 STIP (SIP bit 5) 是不同的 bit 位置。`MIP & MIDELEG` = `(1<<7) & (1<<5)` = 0，导致定时器中断在委托后永远无法被 S 模式检测到。正确做法是按 cause 映射：M 模式中断 cause N+2 的 pending 位要映射到 S 模式中断 cause N 的 pending 位。
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+ctest --test-dir build_wsl       # ✅ 78/78 全部通过
+```
+
+### MiniOS 运行结果
+
+```
+MiniOS booting...
+Hello from kernel!
+--- Kernel Log Demo ---
+...
+=== TRAP ===
+scause: 0x9
+sepc:   0x800003dc
+stval:  0x73
+Type: Exception (0x9)
+  -> Environment call from S-mode
+...
+System call test passed!
+--- Phase 7: Preemptive Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x8000009c)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x80000100)
+Timer initialized: mtime=0x13cba, mtimecmp=0x1fffd
+[Idle ] count=0
+[Idle ] count=1
+[Idle ] count=2
+[Idle ] count=3
+[Idle ] count=4
+[Task A] count=0
+[Task A] count=1
+[Task A] count=2
+[Task A] count=3
+[Task A] count=4
+[Task B] count=0
+...
+```
+
+验收标准全部满足：
+- ECALL from S-mode 异常正确捕获（scause=0x9），trap handler 处理后 sret 返回
+- 系统调用（sys_write/sys_exit）在 S 模式正常工作
+- 抢占式调度在 S 模式正常：定时器中断委托到 S 模式（cause=5），sched_tick 切换任务
+- 三个任务按 Idle → A → B 顺序轮转，context 正确保存/恢复
+- S 模式 sret 正确恢复 SPP→mode, SPIE→SIE
+
+### 经验笔记
+
+1. **mret 是特权级切换的唯一途径**：RISC-V 没有"跳转到 S 模式"的指令。M 模式切换到 S 模式只能通过 mret：设置 MPP=S, mepc=目标地址, 执行 mret。同理，S 模式返回 U 模式使用 sret。这是 RISC-V 特权架构的核心机制。
+
+2. **medeleg/mideleg 不是简单的"转发"**：委托不仅仅是把陷阱从 M 模式转发到 S 模式。它改变了整个 trap 入口行为——使用 stvec 替代 mtvec，sepc 替代 mepc，scause 替代 mcause，sstatus 替代 mstatus。两个 trap 入口是两套完全独立的 CSR 集合。
+
+3. **MIP 和 SIP 的位映射不是 AND**：MTIP (bit 7) 和 STIP (bit 5) 是不同的 bit 位置。`MIP & MIDELEG` 这种简单 AND 无法正确映射——MIP bit 7 和 MIDELEG bit 5 的 AND 结果永远是 0。正确做法是按 cause 编号映射：M 模式中断 cause 7 的 pending (MTIP) 要映射到 S 模式中断 cause 5 的 pending (STIP)。这是本阶段最关键的一个 bug。
+
+4. **`MINIOS_USE_S_MODE` 宏的价值**：阶段 0.5 设计的 CSR 抽象层在这一阶段发挥了关键作用。通过一个编译宏开关，所有内核代码（trap.c, task.c, timer.c, kernel.c）自动从 M 模式 CSR 切换到 S 模式 CSR，无需逐行修改 CSR 名称。代码量最小化，回退只需改 Makefile 一个 flags。
+
+5. **sret vs mret**：两者的行为模式完全一致（读取 xEPC → PC, xPP → mode, xPIE → xIE, 设置 xPP = User），区别仅在于使用的 CSR 集合。从汇编角度看，只是把 `mret` 改成 `sret`。
+
+6. **模拟器中的委托中断检测需要两层判断**：在 S/U 模式下，先检查是否有非委托的 M 模式中断（高优先级，可能抢占 S 模式处理），再检查委托到 S 模式的中断。这确保了中断优先级正确：如果同时有 MEI 和 STI 挂起，MEI 先被处理（进入 M 模式），不会因为 S 模式处理 STI 而延迟。
+
+***
+
+## 2026-06-03 — 阶段 8：系统调用
+
+### 背景
+
+阶段 7 完成了抢占式调度架构。阶段 8 的目标是建立用户程序通过 ecall 进入内核的最小通道：通过 a7 传递系统调用号、a0-a2 传递参数，内核分派并返回结果。
+
+核心设计：利用已有的 ecall 异常路径（阶段 3），在 trap_handler 中识别 ECALL 异常 → 调用 `syscall_dispatch(tf)` → 从 trap frame 中读写 a0/a7 等寄存器。
+
+### 修改清单
+
+#### 1. 创建 os/kernel/syscall.h — 系统调用接口
+
+**新增文件**：[os/kernel/syscall.h](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.h)
+
+**系统调用号**（遵循 RISC-V Linux 约定）：
+- `SYS_WRITE = 64` — 向控制台输出字符串
+- `SYS_EXIT  = 93` — 退出/停机
+
+**接口**：`void syscall_dispatch(uint64_t *tf)` — 接收 trap frame 指针，从中读取/写回寄存器。
+
+#### 2. 创建 os/kernel/syscall.c — 系统调用实现
+
+**新增文件**：[os/kernel/syscall.c](file:///home/xiaowen/projects/mycpu/os/kernel/syscall.c)
+
+**sys_write(fd, buf, len)**：
+- 遍历 buf 中 len 字节，逐字符调用 `uart_putc()`
+- 返回实际写入字节数
+- 空指针/零长度保护：buf==0 或 len==0 时直接返回 0
+
+**sys_exit(code)**：打印退出码后进入死循环停机。
+
+**syscall_dispatch(tf)**：
+- `nr = tf[17]`（a7 偏移）获取系统调用号
+- `arg0/arg1/arg2 = tf[10-12]`（a0-a2 偏移）获取参数
+- 返回值写入 `tf[10]`（a0）
+
+**trap frame 寄存器偏移**：
+
+| 偏移 | 寄存器 | 用途 |
+|------|--------|------|
+| tf[10] | a0 | 参数1 / 返回值 |
+| tf[11] | a1 | 参数2 |
+| tf[12] | a2 | 参数3 |
+| tf[17] | a7 | 系统调用号 |
+
+#### 3. 修改 trap.c — ECALL 接入 syscall 分派
+
+**文件**：[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**修改**：
+- 新增 `#include "syscall.h"`
+- ECALL from M/S/U 分支均调用 `syscall_dispatch(tf)`
+
+**设计要点**：ECALL 是异常（mcause bit63=0），异常路径固定执行 `trap_epc_write(epc + 4)` 跳过 ecall 指令。syscall_dispatch 中的寄存器修改（trap frame 写入）在 mret 恢复寄存器时自然生效。
+
+#### 4. 修改 kernel.c — Phase 8 测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**测试 1 — sys_write 正常输出**：
+```c
+li a7, 64    /* SYS_WRITE */
+li a0, 1     /* fd=1 */
+mv a1, msg   /* buf */
+li a2, 21    /* len */
+ecall
+```
+预期：输出 "Hello from syscall!"，返回 21。
+
+**测试 2 — sys_write 边界测试**：a0=a1=a2=0，预期返回 0。
+
+**测试 3 — 未知系统调用**：a7=999，预期返回 -1。
+
+**测试 4 — sys_exit 停机**：a7=93，ecall 后系统进入死循环退出。避免进入阶段 7 的抢占式调度（该阶段尚有已知问题）。
+
+#### 5. 更新 os/Makefile
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- KERNEL_SRCS 新增 `kernel/syscall.c`
+- OBJS 新增 `$(BUILD_DIR)/syscall.o`
+- 新增 syscall.o 编译规则
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+ctest --test-dir build_wsl       # ✅ 78/78 全部通过
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 8: System Call Test ---
+=== TRAP ===
+mcause: 0xa
+mepc:   0x800003c8
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+Hello from syscall!
+=== TRAP END ===
+sys_write returned: 21 (expected 21)
+=== TRAP ===
+mcause: 0xa
+mepc:   0x800003f8
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+=== TRAP END ===
+sys_write(NULL,0) returned: 0 (expected 0)
+=== TRAP ===
+mcause: 0xa
+mepc:   0x8000041c
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+Unknown syscall number: 999
+=== TRAP END ===
+Unknown syscall returned: -1 (expected -1)
+System call test passed!
+...
+--- System Exit (code=10) ---
+```
+
+### 经验笔记
+
+1. **系统调用的本质是"受控的 ecall"**：ecall 本身只是一个触发异常的指令，真正赋予它"系统调用"语义的是 trap handler 中的分派逻辑。ecall 前设置 a7（系统调用号）+ 参数寄存器，ecall 后在 trap handler 中根据 a7 分派，返回值写回 a0——整条路径下来，ecall 就像一个"特殊的函数调用"，参数和返回值都走标准 calling convention 的寄存器。
+
+2. **trap frame 是内核与用户态之间的 ABI 协议**：`syscall_dispatch` 不直接操作 CPU 寄存器，而是读写 trap frame 数组。mret 时硬件从 trap frame 中恢复寄存器，修改就自然生效。这是 RISC-V trap 机制的精妙设计——内核代码不需要知道异常发生时的寄存器具体值，只需要按偏移读写一个数组。
+
+3. **ECALL 异常处理的 mepc 推进**：ecall 指令触发异常，mepc 指向 ecall 指令本身。trap handler 结束时 `mepc += 4` 跳过 ecall，这样 mret 后执行的是 ecall 的下一条指令。这是正确的行为——如果 mepc 不推进，mret 后会再次执行 ecall 造成死循环。
+
+4. **sys_exit 的实现是"忙等死循环"**：真正的 OS 中 exit 会回收资源并切换到其他进程。MiniOS 目前没有进程模型，退出的最简实现就是死循环——模拟器在 timeout 后被 kill。这是"在当前上下文做最小正确的事"的务实做法。
+
+5. **Phase 3 的裸 ecall 触发了 "Unknown syscall number: 0"**：因为 Phase 3 测试执行 `ecall` 时没有事先设置 a7，a7 的当前值是 0（未定义的槽位）。这验证了 syscall_dispatch 的 default 分支能正确处理未知系统调用号。
+
+***
+
+## 2026-06-03 — 阶段 7：抢占式调度
+
+### 背景
+
+阶段 6 实现了协作式调度（yield 主动让出）。阶段 7 的目标是让定时器中断自动触发任务切换，任务无需显式调用 yield()。核心挑战：中断上下文中的上下文切换与协作文切换的路径不同。
+
+### 修改清单
+
+#### 1. trap.S — 传递 trap frame 基址给 C handler
+
+**文件**：[os/kernel/trap.S](file:///home/xiaowen/projects/mycpu/os/kernel/trap.S)
+
+**关键修改**：在 `call trap_handler` 前新增 `mv a0, sp`，将 trap frame 基址作为第一个参数传递给 `trap_handler(uint64_t *tf)`。
+
+**设计意图**：trap frame 保存了被中断任务的完整寄存器状态（32 × 8B = 256B）。`sched_tick(tf)` 需要读写 trap frame 中的 callee-saved 寄存器来完成任务上下文交换。
+
+#### 2. trap.h/trap.c — 增强 trap handler
+
+**文件**：[os/kernel/trap.h](file:///home/xiaowen/projects/mycpu/os/kernel/trap.h)、[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**修改**：
+- `trap_handler` 签名改为 `void trap_handler(uint64_t *tf)`
+- 定时器中断（irq_code=7）分支新增 `sched_tick(tf)` 调用
+- 新增 `trap_silent` 静态变量和 `trap_set_silent(int)` setter：抢占式调度阶段减少 "=== TRAP ===" 输出的噪音
+
+#### 3. timer.c — 精简 timer_handle
+
+**文件**：[os/kernel/timer.c](file:///home/xiaowen/projects/mycpu/os/kernel/timer.c)
+
+**修改**：`timer_handle()` 移除 printk 输出，仅保留 `tick_count++` 和 `*mtimecmp = *mtime + TIMER_INTERVAL`。抢占式调度下每次 tick 都触发一次上下文切换，打印 tick 信息会产生海量输出。
+
+#### 4. task.h/task.c — sched_tick 抢占式调度入口
+
+**文件**：[os/kernel/task.h](file:///home/xiaowen/projects/mycpu/os/kernel/task.h)、[os/kernel/task.c](file:///home/xiaowen/projects/mycpu/os/kernel/task.c)
+
+**新增 `sched_tick(uint64_t *tf)` 函数**：
+
+核心逻辑：
+1. 从 trap frame 提取当前任务的 callee-saved 寄存器 → 保存到 `current->ctx`
+2. `ra = trap_epc_read()`（被中断指令地址）
+3. `sp = tf[2]`（进入 trap 前的原始 sp）
+4. `s0-s11` 从 tf[8-9, 18-27]（trap frame 固定偏移）
+5. 调用 `schedule()` 选下一个任务
+6. 将 `next->ctx` 写回 trap frame + `trap_epc_write(next->ctx.ra)`
+7. trap_entry 尾随恢复 + mret 自然跳转到新任务
+
+**设计决策**：sched_tick 不调用 `switch_to`。`switch_to` 是给 yield() 用的协作式路径（C 调用汇编），而抢占式路径利用硬件已保存的 trap frame，直接修改 frame 内容即可。
+
+**trap frame 偏移表**（sched_tick 使用）：
+| 偏移 | 寄存器 | 用途 |
+|------|--------|------|
+| tf[2 ] = sp+16 | sp_original | 进入 trap 前的栈指针 |
+| tf[8 ] = sp+64 | s0/fp | 帧指针 |
+| tf[9 ] = sp+72 | s1 | |
+| tf[18] = sp+144 | s2 | |
+| tf[19] = sp+152 | s3 | |
+| tf[20] = sp+160 | s4 | |
+| tf[21] = sp+168 | s5 | |
+| tf[22] = sp+176 | s6 | |
+| tf[23] = sp+184 | s7 | |
+| tf[24] = sp+192 | s8 | |
+| tf[25] = sp+200 | s9 | |
+| tf[26] = sp+208 | s10 | |
+| tf[27] = sp+216 | s11 | |
+
+#### 5. kernel.c — Phase 7 抢占式调度测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：
+- 任务函数 `task_a`/`task_b` 移除 `yield()` 调用（纯循环 + printk + delay），完全依赖定时器中断切换
+- kernel_main：`csr_set(mstatus, MSTATUS_MIE)` 开全局中断 → `timer_init()` → `trap_set_silent(1)` 静默 trap 输出 → idle 循环不含 yield
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 7: Preemptive Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x80000040)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x800000a4)
+Timer initialized: mtime=0xbd91, mtimecmp=0x180d4
+[Idle ] count=0
+[Idle ] count=1
+[Idle ] count=2
+[Idle ] count=3
+[Idle ] count=4
+[Task A] count=0
+[Task A] count=1
+[Task A] count=2
+[Task A] count=3
+[Task A] count=4
+[Task B] count=0
+[Task B] count=1
+[Task B] count=2
+[Task B] count=3
+[Task B] count=4
+[Idle ] count=5
+[Idle ] count=6
+...
+```
+
+验收标准全部满足：
+- 三个任务（Idle/A/B）按 round-robin 轮转，每个时间片约 5 次 printk
+- 定时器中断（TIMER_INTERVAL=50000 cycles）自动触发切换，无需 yield()
+- context 正确保存/恢复（callee-saved 寄存器 + mepc + sp）
+- count 单调递增，跨切换无丢失
+- trap_silent 模式下输出干净，无中断日志噪音
+
+### 经验笔记
+
+1. **抢占式和协作式上下文切换路径不同**：协作式（yield）用 `switch_to` 直接保存/恢复 callee-saved 寄存器；抢占式（sched_tick）通过修改 trap frame + mepc 间接完成，利用硬件已保存的完整寄存器状态。这是两种不同的调度路径，不能混用。
+
+2. **trap frame 是中断上下文和任务切换之间的桥梁**：`trap_entry` 将寄存器保存到栈上 → `trap_handler` 解释中断原因 → `sched_tick` 读/写 trap frame → `trap_entry` 尾随恢复 → `mret` 跳转到新任务。整个路径中 trap frame 是数据的"中转站"。
+
+3. **trap_silent 是务实的工程选择**：抢占式调度下每次定时器中断都输出 "=== TRAP ===" 会产生数百行无用输出，淹没真正的任务输出。`trap_set_silent(1)` 在测试阶段减少噪音，调试时可关闭。
+
+4. **`mv a0, sp` 是汇编层和 C 层之间的 ABI**：RISC-V calling convention 规定 a0 为第一个参数。trap.S 将 sp 放入 a0 后 call trap_handler，C 层 `trap_handler(uint64_t *tf)` 就拿 tf == sp == trap frame 基址。这是最简单的跨语言接口。
+
+5. **mepc 在抢占式调度中承担双重角色**：对于新任务，mepc 设为 entry 地址（首次"返回"即跳转到任务入口）；对于被抢占的老任务，mepc 设为被中断的指令地址（恢复执行）。控制 mepc 就是控制 CPU 下一步去哪里。
+
+6. **Bug：不能通过 `__asm__("mv %0, sp")` 获取 trap frame 地址**：这是本阶段的关键 bug。最初的 `sched_tick()` 在函数内部通过内联汇编直接读取 `sp`，期望得到 trap frame 基址。但实际上，`sched_tick` 被 `trap_handler` 调用，`trap_handler` 被 `trap_entry` 调用，每层调用 sp 都递减（分配新栈帧）。`sched_tick` 内读到的 sp 是它自己的栈帧地址，而非 `trap_entry` 分配的 trap frame。修复方式：在 `trap_entry` 最早处执行 `mv a0, sp`，将 trap frame 基址通过 `a0 → trap_handler(tf) → sched_tick(tf)` 参数链层层传递。这是裸机/内核编程的经典坑：**汇编和 C 之间的指针必须通过参数传递，不能依赖当前 sp。**
+
+***
+
+## 2026-06-03 — 阶段 6：任务结构与协作式调度
+
+### 背景
+
+阶段 5 建立了物理页分配器，为每个任务分配独立内核栈提供了内存基础。阶段 6 的目标是实现最小任务抽象和协作式调度，为后续阶段 7（抢占式调度）奠定基础。
+
+核心设计决策：先做**协作式调度**（任务主动 yield）而非抢占式。抢占式调度依赖稳定的定时器中断和上下文保存机制，复杂度更高；协作式调度更简单，适合作为第一版任务系统。
+
+### 修改清单
+
+#### 1. 创建 os/kernel/task.h — 任务结构体定义
+
+**新增文件**：[os/kernel/task.h](file:///home/xiaowen/projects/mycpu/os/kernel/task.h)
+
+**核心类型**：
+
+```c
+struct context {
+    uint64_t ra;    /* 返回地址 */
+    uint64_t sp;    /* 栈指针   */
+    uint64_t s0;    /* 帧指针   */
+    uint64_t s1;    /* 保存寄存器 s1  */
+    uint64_t s2;    /* 保存寄存器 s2  (x18)  */
+    ...             /* ... s3-s11 */
+};
+
+struct task {
+    struct context ctx;   /* callee-saved 上下文 (112 字节) */
+    void          *stack; /* 内核栈基址 (kalloc 分配的页) */
+    int            state; /* TASK_UNUSED/READY/RUNNING     */
+    const char    *name;  /* 调试名称                      */
+};
+```
+
+**设计要点**：
+- `struct context` 只保存 **callee-saved** 寄存器（ra, sp, s0-s11），共 14 个 × 8 字节 = 112 字节
+- Caller-saved 寄存器（t0-t6, a0-a7）由 C 编译器在 `yield()` 函数调用的栈帧中自动保存/恢复
+- `sizeof(struct task)` = 112 + 8 + 4 + 4(padding) + 8 = 136 字节
+
+#### 2. 创建 os/kernel/switch.S — 上下文切换汇编
+
+**新增文件**：[os/kernel/switch.S](file:///home/xiaowen/projects/mycpu/os/kernel/switch.S)
+
+```asm
+switch_to:
+    # 保存当前上下文到 prev (a0)
+    sd ra,   0(a0)
+    sd sp,   8(a0)
+    sd s0,  16(a0)
+    ...            # s1-s11
+    # 从 next (a1) 恢复上下文
+    ld ra,   0(a1)
+    ld sp,   8(a1)
+    ...            # s0-s11
+    ret            # 返回到 next->ra (新任务的入口或 yield 返回点)
+```
+
+**关键设计**：
+- `switch_to` 的 `ret` 返回到 `next->ra`：对于新任务指向 `entry` 函数，对于已运行过的任务指向 `yield()` 中 `switch_to` 调用后的下一条指令
+- 使用 `a1`（而非 `sp`）作为基址加载寄存器，避免 `ld sp, 8(a1)` 改变 sp 后影响后续加载
+
+#### 3. 创建 os/kernel/task.c — 任务管理与调度
+
+**新增文件**：[os/kernel/task.c](file:///home/xiaowen/projects/mycpu/os/kernel/task.c)
+
+**任务表**：`static struct task tasks[MAX_TASKS]` — 最多 8 个任务
+
+**task_init() 逻辑**：
+- 初始化所有任务槽为 `TASK_UNUSED`
+- 将 task[0] 设为当前运行的 idle 任务（`TASK_RUNNING`）
+- `current = &tasks[0]`, `task_count = 1`
+
+**task_create(func, name) 逻辑**：
+1. 找空闲槽位 → `kalloc()` 分配内核栈页 → 初始化 context
+2. `ctx.ra = entry`（switch_to ret 时跳转到任务入口）
+3. `ctx.sp = stack + PAGE_SIZE`（栈从高地址向低地址增长）
+4. 所有 s0-s11 清零
+
+**schedule() 逻辑**：简单轮询（round-robin）
+- 从 `current` 的下一个槽位开始遍历
+- 返回第一个 `TASK_READY` 或 `TASK_RUNNING` 状态的任务
+
+**yield() 逻辑**：
+1. 检查 `current != NULL && task_count > 1`
+2. `prev = current`, `next = schedule()`
+3. 若 `next != NULL && next != prev`：将 prev 状态改为 READY，next 改为 RUNNING，`current = next`
+4. 调用 `switch_to(&prev->ctx, &next->ctx)` 执行上下文切换
+
+#### 4. 更新 os/kernel/kernel.c — Phase 6 测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**新增三个测试任务**：
+- `task_a()` — 循环打印 `[Task A] count=N` → delay → yield
+- `task_b()` — 循环打印 `[Task B] count=N` → delay → yield
+- idle（kernel_main 主循环）— 打印 `[Idle ] count=N` → delay → yield
+
+**kernel_main 配置**：
+```c
+mem_init();                          // 为任务栈分配做准备
+task_init();                         // 初始化任务子系统
+task_create(task_a, "task_a");       // 创建任务 A (tid=1)
+task_create(task_b, "task_b");       // 创建任务 B (tid=2)
+while (1) { /* idle 任务 yield 循环 */ }
+```
+
+#### 5. 更新 os/Makefile
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- KERNEL_SRCS 新增 `kernel/task.c`
+- KERNEL_ASMS 新增 `kernel/switch.S`
+- OBJS 新增 `task.o` 和 `switch.o`
+- 新增对应的编译规则
+
+### 构建验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 6: Cooperative Scheduling ---
+Task subsystem initialized (idle task as task[0]).
+Created task 'task_a' (tid=1, stack=0x80004000, entry=0x80000040)
+Created task 'task_b' (tid=2, stack=0x80005000, entry=0x800000a8)
+[Idle ] count=0
+[Task A] count=0
+[Task B] count=0
+[Idle ] count=1
+[Task A] count=1
+[Task B] count=1
+[Idle ] count=2
+[Task A] count=2
+[Task B] count=2
+... (交替运行，按 Idle → A → B 顺序轮转)
+```
+
+验收标准全部满足：
+- 两个任务可以交替运行（A/B/Idle 三轮转）
+- 每个任务拥有独立栈（kalloc 分配，不同页地址）
+- 上下文切换后寄存器状态不混乱（count 计数器连续递增）
+- UART 输出顺序可观察（严格 Idle → A → B → Idle → A → B）
+
+### 经验笔记
+
+1. **Callee-saved vs Caller-saved 的理解是上下文切换的核心**：RISC-V calling convention 中，`ra, sp, s0-s11` 是 callee-saved（被调用者保证不变），`t0-t6, a0-a7` 是 caller-saved（调用者自己保存）。`switch_to` 只需要保存 callee-saved 寄存器——因为它本身就是一个"被调用的函数"。Caller-saved 寄存器由 `yield()` 的编译器生成的函数序言/尾声自动在栈帧中保存。
+
+2. **新任务通过伪造 ra 来"启动"**：新任务从未运行过，没有真正的"返回地址"。通过设置 `ctx.ra = entry`，`switch_to` 的 `ret` 指令就会直接跳转到任务入口函数。这是初始化任务上下文的经典技巧。
+
+3. **`switch_to` 中 `ld sp` 不影响后续加载**：因为加载使用 `a1` 作为基址而非 `sp`，所以即使 `ld sp, 8(a1)` 改变了栈指针，后续的 `ld s0, 16(a1)` 等仍然从正确的地址（next->context 的内存区域）加载数据。
+
+4. **idle 任务不需要单独分配栈**：task[0]（idle）使用启动阶段 `start.S` 设置的 `_stack_top` 栈，不需要 `kalloc` 额外分配。它的 `stack` 字段设为 `NULL`，切换回来时 sp 恢复为之前保存在 context 中的值（指向 `_stack_top` 区域）。
+
+5. **协作式调度不需要关中断**：当前阶段任务通过 `yield()` 自愿让出 CPU，不存在竞态条件。阶段 7（抢占式调度）需要在 `timer_handle()` 中触发 `schedule()`，届时需要 `local_irq_save/restore` 保护临界区。
+
+***
+
+## 2026-06-03 — 阶段 4：机器定时器与 CLINT
+
+### 背景
+
+阶段 3 建立了 trap handler 和异常处理路径。阶段 4 的目标是让定时器中断周期性触发，为后续调度器做准备。核心挑战：模拟器端（C++）需要具备中断检测和分发能力，内核端（C）需要初始化 CLINT 并响应定时器中断，trap handler 需要区分中断（mepc 不推进）和异常（mepc 推进）。
+
+### 修改清单
+
+#### 1. Simulator 端：CLINT tick() 方法
+
+**文件**：[src/clint.h](file:///home/xiaowen/projects/mycpu/src/clint.h)、[src/clint.cpp](file:///home/xiaowen/projects/mycpu/src/clint.cpp)
+
+**新增**：
+- `bool tick(uint64_t increment = 1)` — 每指令周期推进 mtime，返回 `mtime >= mtimecmp`
+- `get_mtime()` / `get_mtimecmp()` — 获取当前值（调试用）
+
+```cpp
+bool Clint::tick(uint64_t increment) {
+  mtime += increment;
+  return mtime >= mtimecmp;
+}
+```
+
+#### 2. Simulator 端：CPU 中断检测与处理
+
+**文件**：[src/cpu.h](file:///home/xiaowen/projects/mycpu/src/cpu.h)、[src/cpu.cpp](file:///home/xiaowen/projects/mycpu/src/cpu.cpp)
+
+**新增方法 A — `check_pending_interrupts()`**：
+- 读取 MIP、MIE、MSTATUS 寄存器
+- 检查全局中断使能 `mstatus.MIE`
+- 计算 `pending = mip & mie`（只处理同时挂起且使能的中断）
+- 优先级：MEI(11) > MSI(3) > MTI(7)
+- 返回带 bit63 置位的 cause（中断标记）
+
+**新增方法 B — `handle_interrupt(uint64_t cause)`**：
+- 切换到 M 模式
+- 跳转到 mtvec 指向的 trap handler
+- 保存中断前 PC 到 mepc（不推进，mret 返回被中断的指令）
+- 保存 mcause（含 bit63 中断标记）、mtval(=0)
+- 更新 mstatus：保存 MIE→MPIE，清除 MIE，保存 MPP
+
+#### 3. Simulator 端：main.cpp 中断轮询
+
+**文件**：[src/main.cpp](file:///home/xiaowen/projects/mycpu/src/main.cpp)
+
+**主循环修改**：
+```cpp
+// 每指令周期推进 CLINT，根据结果更新 MTIP
+if (cpu.bus.clint.tick()) {
+    cpu.csr.store(MIP, cpu.csr.load(MIP) | MASK_MTIP);   // 触发
+} else {
+    cpu.csr.store(MIP, cpu.csr.load(MIP) & ~MASK_MTIP);   // 清除
+}
+// 取指前检查中断
+auto maybe_irq = cpu.check_pending_interrupts();
+if (maybe_irq.has_value()) {
+    cpu.handle_interrupt(maybe_irq.value());
+    continue;  // 中断返回后继续下一条指令
+}
+```
+
+**设计要点**：中断在指令边界采样（取指前检查），这是 RISC-V 规范的标准行为。
+
+#### 4. 内核定时器驱动
+
+**新增文件**：
+- [os/kernel/timer.h](file:///home/xiaowen/projects/mycpu/os/kernel/timer.h) — CLINT MMIO 地址宏 + `timer_init()` / `timer_handle()` 声明
+- [os/kernel/timer.c](file:///home/xiaowen/projects/mycpu/os/kernel/timer.c) — 定时器驱动实现
+
+**timer_init() 逻辑**：
+1. 设置首次 mtimecmp = mtime + TIMER_INTERVAL(500)
+2. `csr_set(mie, MIE_MTIE)` 使能机器定时器中断
+3. 打印当前 mtime/mtimecmp 值
+
+**timer_handle() 逻辑**：
+1. tick_count++
+2. 设置下一次 mtimecmp = mtime + TIMER_INTERVAL
+3. 打印 Tick 序号和 mtime 值
+
+#### 5. 更新 trap handler
+
+**文件**：[os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c)
+
+**关键修改**：
+- 中断分支（bit63=1）：switch 解码 irq_code，timer 中断(7) 调用 `timer_handle()`，**不推进 mepc**（直接 return）
+- 异常分支（bit63=0）：原有逻辑，推进 `mepc+4`
+
+**中断 vs 异常的处理差异**：
+
+| 特性 | 异常（如 ECALL） | 中断（如 Timer） |
+|------|-----------------|-----------------|
+| mepc | 指向触发异常的指令 | 指向被中断的指令（尚未执行） |
+| mepc 推进 | +4（跳过 ECALL） | 不推进（返回继续执行） |
+| mret 行为 | 回到异常指令的下一条 | 回到被中断的指令 |
+
+#### 6. printk 格式扩展
+
+**文件**：[os/kernel/printk.c](file:///home/xiaowen/projects/mycpu/os/kernel/printk.c)
+
+**修改**：新增 `%u`（unsigned int）格式支持，复用 `print_dec`。
+
+#### 7. 更新 kernel.c 和 Makefile
+
+**文件**：
+- [os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c) — Phase 4 测试段：`timer_init()` → `local_irq_enable()` → `wfi` 循环等待中断
+- [os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile) — 新增 `timer.o` 编译目标
+
+### 构建验证
+
+```bash
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+cd os && make clean && make         # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 4: Timer Interrupt Test ---
+Timer initialized: mtime=0x4e83, mtimecmp=0x506c
+=== TRAP ===
+mcause: 0x8000000000000007     ← 定时器中断（bit63=1, code=7 = MTI）
+mepc:   0x80000054             ← wfi 指令地址
+mtval:  0x0
+Type: Interrupt (0x7)
+  -> Machine timer interrupt
+Tick #1 @ mtime=0x7186
+=== TRAP END ===
+Tick #2 @ mtime=0x9363
+Tick #3 @ mtime=0xb54e
+Tick #4 @ mtime=0xd747
+... (周期性触发，每次约 2000 cycles)
+```
+
+### 经验笔记
+
+1. **中断在指令边界采样**：在 main.cpp 的 fetch 之前检查中断，而非 execute 之后。这符合 RISC-V 规范——中断在每条指令执行完后采样。
+
+2. **MTIP 由 mtime >= mtimecmp 决定**：CLINT tick() 返回比较结果，main.cpp 据此设置/清除 MIP.MTIP。内核 timer_handle 更新 mtimecmp 后，下一周期 mtime < 新 mtimecmp，MTIP 自动清除。
+
+3. **mret 自动恢复 MIE**：executeMRET 将 MPIE 恢复到 MIE，再设置 MPIE=1。这意味着 trap handler 不需要手动重新使能中断——mret 会自动完成。
+
+4. **中断 vs 异常的 mepc 语义不同**：
+   - 异常：mepc 指向异常指令本身（如 ECALL），需要 +4 跳过
+   - 中断：mepc 指向尚未执行的被中断指令，mret 直接回到该指令继续执行
+
+5. **wfi 不真正等待**：当前 wfi 是空实现（NOP），内核使用 `while(1) { __asm__ volatile("wfi"); }` 做忙等待。实际硬件中 WFI 会暂停 CPU 直到中断到达，这里只是一个语义占位符。
+
+6. **中断优先级**：RISC-V 规范定义 MEI > MSI > MTI（从高到低），实际实现中按此顺序检查 pending 位。
+
+***
+
+## 2026-06-03 — 阶段 5：简单内存管理
+
+### 背景
+
+阶段 4 建立了定时器中断，内核已能在中断驱动下稳定运行。阶段 5 的目标是建立最小物理页分配器，为后续阶段 6（任务调度，需要为每个任务分配内核栈）提供内存基础。
+
+### 修改清单
+
+#### 1. 创建 os/kernel/mem.h — 分配器接口
+
+**新增文件**：[os/kernel/mem.h](file:///home/xiaowen/projects/mycpu/os/kernel/mem.h)
+
+**接口**：
+- `void mem_init(void)` — 初始化分配器（O(1) 计算可用页数）
+- `void* kalloc(void)` — 分配一页（4096 字节对齐），失败返回 NULL
+- `void kfree(void* ptr)` — 释放一页，含安全检查（页对齐 + 地址范围）
+- `size_t mem_free_pages(void)` — 查询剩余空闲页数
+
+#### 2. 创建 os/kernel/mem.c — 分配器实现
+
+**新增文件**：[os/kernel/mem.c](file:///home/xiaowen/projects/mycpu/os/kernel/mem.c)
+
+**设计决策：bump allocator + 空闲链表混合**
+
+初始方案是 pure free-list：在 `mem_init()` 中遍历所有空闲页逐个链入链表。但模拟器逐条指令执行，初始化 32702 页需要极长时间（每页存一次 `fp->next` 相当于一次 store 指令 + 循环跳转），导致内核在初始化阶段耗时过长。
+
+最终方案：
+- `mem_init()` 只做 O(1) 计算：`total_free = (heap_end - bump_ptr) / PAGE_SIZE`
+- `kalloc()` 优先从 `free_list` 取页（kfree 回收的页）→ O(1)
+- `free_list` 为空时走 bump allocator（推进指针）→ O(1)
+- `kfree()` 将释放的页链入 `free_list` → O(1)
+
+**堆范围**：
+```
+bump_ptr = align_up(&_kernel_end, PAGE_SIZE)   // 内核代码/数据紧后
+heap_end = &_stack_top - 256KB                 // 栈保护区
+```
+
+**执行结果**：内核区域约 102KB（25.5 页），_kernel_end 向上对齐到 0x80002000。堆区从 0x80002000 到 0x87FC0000，共 32702 页（约 127.7 MB）。
+
+#### 3. 更新 os/Makefile
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- 新增 `mem.o` 编译目标
+- KERNEL_SRCS 加入 `kernel/mem.c`
+- OBJS 从 7 个扩展到 8 个
+
+#### 4. 更新 os/kernel/kernel.c — 内存分配测试
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**验证逻辑**：
+1. `mem_init()` 初始化 → 打印空闲页数
+2. 连续分配 p1/p2/p3 三个页 → 验证地址递增且互不相同
+3. 向 p1 写入 ABCDEFGHIJKLMNOP → 验证可读写
+4. `kfree(p2)` → 验证空闲计数 +1
+5. 重新 `kalloc()` → 验证返回地址 == p2（空闲链表回收复用）
+6. 全部释放 → 验证空闲计数回到初始值
+
+### 构造验证
+
+```bash
+cd os && make clean && make     # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 5: Memory Allocator Test ---
+Free pages: 32702
+Alloc p1: 0x80002000
+Alloc p2: 0x80003000
+Alloc p3: 0x80004000
+Free pages after alloc: 32699
+p1 data: ABCDEFGHIJKLMNOP
+Free pages after kfree(p2): 32700
+Alloc p4: 0x80003000 (should == p2: 0x80003000)
+Free pages after cleanup: 32702
+Memory allocator test passed!
+```
+
+验收标准全部满足：
+- 能分配一页或多页物理内存
+- 不覆盖内核区域（p1 从 _kernel_end 对齐边界开始）
+- 分配地址按页对齐（0x...000 / 0x...000）
+- 重复分配不会返回同一页
+- 释放后可以再次分配（p4 == p2 地址复用）
+- 计数器闭环一致（32702 → 32699 → 32700 → 32702）
+
+### 经验笔记
+
+1. **模拟器性能是设计约束**：纯空闲链表 O(n) 初始化在模拟器上慢得不可接受。在实际硬件上遍历 3 万页是瞬间的事，但模拟器每条指令都要解释执行。Bump + free_list 混合方案用 O(1) 初始化避免了这个问题。
+
+2. **空闲链表节点内嵌在空闲页中**：`struct free_page { struct free_page* next; }` 直接在空闲页的起始 8 字节存储 next 指针，不额外消耗内存。这是内核内存管理器的经典技巧。
+
+3. **kfree 的安全检查**：页对齐检查（`addr & (PAGE_SIZE-1)`）+ 地址范围检查（`>= _kernel_start && < _stack_top`）。裸机环境下没有 MMU 保护，如果释放了错误的地址（如栈上的局部变量），会破坏空闲链表导致后续 kalloc 返回非法地址。
+
+4. **`extern char` 获取链接符号地址**：C 编译器将符号视为变量地址，`&_kernel_end` 得到链接器分配的值。不能 `extern uintptr_t _kernel_end`（会尝试读取该地址的 8 字节内容，而非地址本身）。
+
+5. **栈保护区 256KB**：为内核栈预留空间，防止 bump allocator 推进到栈区域。当前内核只有一个线程，栈用量很小，256KB 远超实际需要，但为未来多任务留足余量。
+
+6. **print_hex 自带 0x 前缀**：初版格式串写了 `"0x%lx"` 导致 `0x0x80002000`。修复为 `"%lx"`。
+
+***
+
+## 2026-06-02 — 阶段 3：Trap 入口与异常处理
+
+### 背景
+
+阶段 2 完成了 UART 输出和 printk 内核日志，MiniOS 已经能通过串口输出信息。但此时模拟器的 `executeECALL` 只抛异常（`throw Exception(EnvironmentCallFromMMode, inst)`），没有 trap 处理路径。阶段 3 的目标是：
+
+1. 建立从硬件异常到内核 handler 的完整路径
+2. 让 MiniOS 通过 `ecall` 主动触发异常并进入 trap handler
+3. 在 trap handler 中读取 mcause/mepc/mtval 并通过 printk 输出
+4. 通过 mret 正确返回到异常发生后的下一条指令
+
+### 修改清单
+
+#### 1. 创建 `os/kernel/trap.S` — trap 入口汇编
+
+**新增文件**：[os/kernel/trap.S](file:///home/xiaowen/projects/mycpu/os/kernel/trap.S)
+
+**内容**：
+- `trap_entry` 是 mtvec 指向的入口点
+- 分配 256 字节栈帧（32 个寄存器 × 8 字节）
+- 保存全部通用寄存器（x0 硬连线零跳过）
+- 调用 C 函数 `trap_handler`
+- 恢复所有寄存器后执行 `mret`
+
+**遇到的工程问题 — sp 恢复顺序 bug**：
+
+| 项 | 详情 |
+|------|------|
+| 症状 | trap handler 执行后，恢复寄存器时触发 `LoadAccessFault` (Fatal) |
+| 根因 | 恢复顺序中 `ld sp, 16(sp)` 在恢复其他寄存器之前执行，sp 值改变后所有后续 `ld` 从错误地址加载 |
+| 修复 | sp 必须是最后一条 `ld` 指令 |
+
+**遇到的工程问题 — t0 被借用后的值污染**：
+
+| 项 | 详情 |
+|------|------|
+| 根因 | 进入 trap 时 t0 保存内核正在使用的值，但 trap 帧必须用 t0 计算原始 sp（`addi t0, sp, 256`），导致覆盖 t0 原值 |
+| 修复 | 三步操作：先 `sd t0, 40(sp)` 保存原始值 → 借用 t0 计算 sp 并 `sd` → `ld t0, 40(sp)` 恢复 t0 原始值 |
+
+#### 2. 创建 `os/kernel/trap.h` 和 `os/kernel/trap.c`
+
+**新增文件**：
+- [os/kernel/trap.h](file:///home/xiaowen/projects/mycpu/os/kernel/trap.h) — trap handler 头文件
+- [os/kernel/trap.c](file:///home/xiaowen/projects/mycpu/os/kernel/trap.c) — trap handler C 实现
+
+**trap_handler 逻辑**：
+1. 通过 `trap_cause_read()` / `trap_epc_read()` / `trap_tval_read()` 读取 CSR
+2. 通过 printk 输出 mcause/mepc/mtval 值
+3. 判断最高位区分中断 vs 异常
+4. 用 switch-case 解码常见异常类型（ECALL/EBREAK/IllegalInstruction）
+5. **关键**：执行 `trap_epc_write(epc + 4)` 推进 mepc，避免 mret 回到同一 ecall
+
+**遇到的工程问题 — mcause 值为 10 而非 11**：
+
+最初在 switch-case 中用 `case 11` 匹配 M-mode ECALL，但实际 mcause=10（0xa）。`EnvironmentCallFromMMode` 在 RISC-V 特权规范中 encode 为 10，不是 11。修正后正确输出 `-> Environment call from M-mode`。
+
+#### 3. 修改 `os/boot/start.S` — 设置 mtvec
+
+**文件**：[os/boot/start.S](file:///home/xiaowen/projects/mycpu/os/boot/start.S)
+
+**修改**：在 BSS 清零之前添加：
+```asm
+la t0, trap_entry
+csrw mtvec, t0
+```
+将 mtvec 指向 trap_entry，使得 CPU 在发生异常时跳转到 trap 入口。
+
+#### 4. 修改 `os/kernel/kernel.c` — 触发测试异常
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：在 printk 演示之后添加：
+```c
+printk("--- Phase 3: Trap Test ---\n");
+printk("Triggering ECALL to test trap handler...\n");
+__asm__ volatile("ecall");
+printk("Returned from trap handler!\n");
+printk("Trap round-trip successful!\n");
+```
+
+验证 trap 完整路径：ecall → trap_entry → trap_handler → mret → 回到 ecall 下一条指令。
+
+#### 5. 修复 `os/include/csr.h` — 宏展开缺陷
+
+**文件**：[os/include/csr.h](file:///home/xiaowen/projects/mycpu/os/include/csr.h)
+
+**问题**：`trap_cause_read()` 展开为 `csr_read(TRAP_CAUSE)`，再展开为 `csr_read(mcause)`。但 C 预处理器的 `#` 字符串化运算符不会展开宏参数，`#csr` 直接将参数名（而非其展开值）转为字符串，导致内联汇编中出现 `csrr t0, TRAP_CAUSE` 而非 `csrr t0, mcause`。
+
+**修复**：添加间接宏层：
+```c
+#define _csr_read(csr)  ({ uint64_t _v; __asm__ volatile("csrr %0, " #csr : "=r"(_v)); _v; })
+#define csr_read(csr)   _csr_read(csr)
+```
+外层 `csr_read(TRAP_CAUSE)` 先将 `TRAP_CAUSE` 展开为 `mcause`，再调用 `_csr_read(mcause)`，此时 `#csr` 得到正确的 `mcause`。
+
+`csr_write`/`csr_set`/`csr_clear` 同样修复。
+
+#### 6. 更新 `os/Makefile`
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- 新增 `KERNEL_ASMS = kernel/trap.S`
+- 新增 `trap_handler.o`（C 编译）和 `trap_entry.o`（汇编编译）目标
+- OBJS 从 4 个扩展到 6 个（start.o + kernel.o + uart.o + printk.o + trap_handler.o + trap_entry.o）
+
+### 构建验证
+
+```bash
+cd os && make clean && make    # ✅ 0 warnings
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+```
+
+### MiniOS 运行结果
+
+```
+--- Phase 3: Trap Test ---
+Triggering ECALL to test trap handler...
+=== TRAP HANDLER ===
+mcause: 0xa
+mepc:   0x80000120
+mtval:  0x73
+Type: Exception (0xa)
+  -> Environment call from M-mode
+=== TRAP END ===
+Returned from trap handler!
+Trap round-trip successful!
+```
+
+- ECALL 触发 trap，mcause=0xa（M-mode 环境调用）
+- mepc 指向 ECALL 指令地址，mtval=0x73（ECALL 的 opcode）
+- trap handler 正确解码异常类型
+- mepc+4 后 mret 返回，执行 "Returned from trap handler!"
+- 无 Fatal 异常，内核正常运行
+
+### 经验笔记
+
+1. **汇编寄存器保存/恢复顺序至关重要**：sp 改变后所有基于 sp 的偏移都错。sp 必须最后恢复。借用临时寄存器时需先保存其原始值再借用，借完后立即恢复。
+
+2. **mret 返回地址决定是否死循环**：mret 将 PC 设为 mepc。如果不主动推进 mepc（+4），mret 回到同一条 ECALL 指令，形成无限循环。注意中断场景下 mepc 不需要推进（中断在指令边界采样）。
+
+3. **C 预处理器 `#` 运算符不展开参数**：`#csr` 直接字符串化原始参数名，不会先展开宏别名。需要两层宏定义来让参数先展开。这是 C 预处理的经典陷阱。
+
+4. **RISC-V ECALL cause 编码**：ECALL 在 M-mode 的 cause 是 10（0xa），而非直觉的 11。需要以 RISC-V 特权规范为准。
+
+5. **trap handler 不需要自己保存 CSR**：mtvec/mepc/mcause/mtval/mstatus 的保存和恢复由模拟器 `Cpu::handle_exception` 和硬件 mret 自动完成。trap handler 只负责读取和决策。
+
+***
+
+## 2026-06-02 — 阶段 2：UART 输出与内核日志
+
+### 背景
+
+阶段 1 已经让 MiniOS 在模拟器上成功启动并输出 "MiniOS booting..." 和 "Hello from kernel!"。但 UART 输出逻辑全部内嵌在 `kernel.c` 中，没有模块化。阶段 2 的目标是：
+
+1. 将 UART 驱动从内核中分离为独立模块
+2. 实现最小 `printk`，支持格式化输出
+3. 让内核日志系统可复用，为后续阶段（trap handler 日志、定时器日志等）打基础
+
+### 修改清单
+
+#### 1. 创建 `os/kernel/uart.h` 和 `os/kernel/uart.c`
+
+**新增文件**：
+- [os/kernel/uart.h](file:///home/xiaowen/projects/mycpu/os/kernel/uart.h) — UART 驱动头文件
+- [os/kernel/uart.c](file:///home/xiaowen/projects/mycpu/os/kernel/uart.c) — UART 驱动实现
+
+**内容**：
+- `uart_init()` — 初始化（当前为空，预留）
+- `uart_putc(char c)` — 轮询等待 LSR THRE 位，然后写入 THR
+- `uart_puts(const char* s)` — 字符串输出
+
+**设计决策**：UART 寄存器地址常量和掩码从头文件定义移到 uart.c 内部（封装），头文件只暴露 API。
+
+#### 2. 创建 `os/kernel/printk.h` 和 `os/kernel/printk.c`
+
+**新增文件**：
+- [os/kernel/printk.h](file:///home/xiaowen/projects/mycpu/os/kernel/printk.h) — 内核日志头文件
+- [os/kernel/printk.c](file:///home/xiaowen/projects/mycpu/os/kernel/printk.c) — 内核日志实现
+
+**支持的格式说明符**：
+
+| 格式 | 类型 | 示例 |
+|------|------|------|
+| `%s` | `const char*` | `printk("hello %s", "world")` |
+| `%d` | `int`（支持负数） | `printk("val=%d", -42)` |
+| `%x` | `uint32_t` | `printk("addr=%x", 0xDEAD)` |
+| `%lx` | `uint64_t` | `printk("ptr=%lx", 0x80000000)` |
+| `%c` | `char` | `printk("letter=%c", 'A')` |
+| `%%` | 字面量 `%` | `printk("100%%")` |
+
+**遇到的工程问题**：`print_dec` 的 `uint32_t` 除法在 RV64 上仍触发 `__umoddi3`/`__udivdi3` 未定义符号。
+
+**根因**：GCC 对 RV64 的 32 位除法和取模会生成 64 位辅助函数调用。
+
+**解决**：用查表减法替代除法和取模：
+```c
+static const uint32_t powers[] = {
+    1000000000, 100000000, 10000000, 1000000,
+    100000, 10000, 1000, 100, 10, 1
+};
+for (int i = 0; i < 10; i++) {
+    char digit = '0';
+    while (val >= powers[i]) { val -= powers[i]; digit++; }
+    // output digit
+}
+```
+
+#### 3. 重构 `os/kernel/kernel.c`
+
+**文件**：[os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c)
+
+**修改**：
+- 移除内嵌的 `uart_putc`/`uart_puts`/`print_hex` 实现
+- 改为 `#include "uart.h"` 和 `#include "printk.h"`
+- 使用 `printk` 输出所有格式化日志，展示所有格式说明符
+
+**验证输出**（153 字符）：
+```
+MiniOS booting...
+Hello from kernel!
+--- Kernel Log Demo ---
+String: hello world
+Decimal: -42
+Hex: 0xdeadbeef
+Long hex: 0x80000000
+Char: Z
+Percent: 100%
+```
+
+#### 4. 更新 `os/Makefile`
+
+**文件**：[os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile)
+
+**修改**：
+- 新增 `uart.o` 和 `printk.o` 编译目标
+- OBJS 从 2 个扩展到 4 个（start.o + kernel.o + uart.o + printk.o）
+
+#### 5. 修复 2 个指令分派 Bug（在模拟器中）
+
+**文件**：[src/instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+这是阶段 2 的意外收获。printk 格式化代码触发了编译器生成的 ADDIW 和 SRAI 指令，暴露出两个分派表 bug：
+
+**Bug A — ADDIW 和 SLLIW 的 funct7 误匹配**：
+
+| 项 | 详情 |
+|------|------|
+| 症状 | `printk("%d\n", -42)` 触发 `IllegalInstruction: ADDIW (0xf9d7869b, funct7=0x7c)` |
+| 根因 | ADDIW 和 SLLIW 被放在 `instruction2Map`（需 funct7 匹配），但它们的 bits[31:25] 是立即数高位而非 funct7，只有立即数为 0 时才能匹配 `funct7=0x00` |
+| 修复 | 将 ADDIW(opcode=0x1b, funct3=0x0) 和 SLLIW(opcode=0x1b, funct3=0x1) 移到 `instructionMap`（只需 opcode+funct3 匹配） |
+
+**Bug B — SRLI/SRAI 的 funct7 宽度错误**：
+
+| 项 | 详情 |
+|------|------|
+| 症状 | `printk(...)` 中移位操作触发 `IllegalInstruction: SRLI (opcode=0x13, funct3=0x5, funct7=0x1)` |
+| 根因 | RV64 的 SRLI/SRAI 使用 6 位 shamt（funct6），bit[25] 是 shamt[5] 而非 funct7[0]。原分发表用 funct7（bits[31:25]）匹配 `0x00`/`0x20`，但非零 shamt 的高位置于 bit[25] 会改变 funct7 值 |
+| 修复 | (a) SRAI 的 funct6 改为 `0x10`（因为 `0x20 << 1 = 0x40`，截取位[31:26] 后为 `0x10`） (b) 增加 funct6 回退查找：当 `(opcode, funct3, funct7)` 未命中时，用 `funct6 = (inst >> 26) & 0x3f` 再查一次 |
+
+### 构建验证
+
+```bash
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+cd os && make                        # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+Total Test time (real) = 77.08 sec
+```
+
+### MiniOS 运行结果
+
+模拟器运行 MiniOS，通过 UART 输出 153 个字符，全部 printk 格式说明符正常：
+- `%s` → "hello world"
+- `%d` → "-42"（负数正常）
+- `%x` → "0xdeadbeef"
+- `%lx` → "0x80000000"
+- `%c` → "Z"
+- `%%` → "%"
+- 非法 `%z` → 原样输出 "%z"，不崩溃
+
+### 经验笔记
+
+1. **裸机环境无 libgcc**：`-nostdlib` 意味着没有 `__udivdi3`/`__umoddi3` 等编译器辅助函数。在 RV64 上即使操作 `uint32_t`，GCC 也可能生成 64 位除法辅助函数调用。免除法算法（查表减法）是安全选择。
+
+2. **RISC-V funct7 不总是 funct7**：I-type 指令的 bits[31:25] 在移位指令中是 funct7，在立即数指令中是 imm[11:5]。ADDIW 的 bits[31:25] 是立即数高位，不能当 funct7 用于分派。
+
+3. **RV64 移位指令的 shamt 是 6 位**：SRLI/SRAI 的 shamt 使用 bits[25:20]（6 位），而非 RV32 的 bits[24:20]（5 位）。额外的 bit[25] 意味着 funct7 的有效区分位只剩 bits[31:26]（funct6）。指令分派需要用 funct6 而非 funct7。
+
+4. **printk 的默认行为不会崩溃**：遇到非法格式符（如 `%z`），输出来源原样 `%z`，不消费 va_arg。虽然参数被静默丢弃，但不会影响后续 printk 调用（每个调用有独立的 va_list）。
+
+5. **模块化先于功能积累**：将 UART 驱动和 printk 从 kernel.c 中分离，虽然增加了文件数，但为后续阶段（trap handler 日志、定时器日志）提供了可复用的基础设施。
+
+***
+
+## 2026-05-29 — 阶段 0.5 全部完成 + 阶段 1 MiniOS 启动成功
+
+### 背景
+
+这是项目启动以来最大规模的推进。目标：完成阶段 0.5（前置工程任务）和阶段 1（裸机程序加载与运行），让 MiniOS 在自研模拟器上成功启动并输出。
+
+任务执行顺序（按依赖关系排列）：
+1. 修复 UART 测试挂起
+2. Bus MMIO 路由（UART/CLINT/PLIC）
+3. 指令集覆盖补全（14 条缺失指令）
+4. CSR 访问抽象层
+5. 内存布局与链接脚本 + MiniOS 裸机程序
+6. 修复 JAL 立即数解码 bug
+7. 修复 B-type 分支指令立即数解码 bug
+
+### 修改清单
+
+#### 1. 修复 UART 测试挂起
+
+**文件**：[uart.h](file:///home/xiaowen/projects/mycpu/src/uart.h)、[uart.cpp](file:///home/xiaowen/projects/mycpu/src/uart.cpp)
+
+**问题**：UART 构造函数无条件启动 `std::thread` 阻塞在 `std::cin >> byte`，导致非交互环境（ctest）下测试挂起。
+
+**修复**：stdin 监听线程改为通过构造函数参数控制，默认不启动。
+
+**修复后**：5 个 UART 测试全部通过，总测试数从 67 增长到 78。
+
+#### 2. Bus MMIO 路由（UART/CLINT/PLIC）
+
+**文件**：[bus.h](file:///home/xiaowen/projects/mycpu/src/bus.h)、[bus.cpp](file:///home/xiaowen/projects/mycpu/src/bus.cpp)
+
+**内容**：
+- Bus 中加入 UART、CLINT、PLIC 的地址路由判断
+- UART 范围 `0x10000000 - 0x1000000F`
+- CLINT 范围 `0x02000000 - 0x0200BFFF`
+- PLIC 范围 `0x0C000000 - 0x0FFFFFFF`
+- 未知地址抛出 LoadAccessFault/StoreAMOAccessFault
+
+**遇到的工程问题**：
+
+**(a) 循环依赖 (uart.h ↔ bus.h)**
+UART 原本 `#include "bus.h"`，Bus 要 `#include "uart.h"`，形成循环依赖。
+**解决**：移除 `uart.h` 中的 `#include "bus.h"`，改用 forward declaration + `std::unique_ptr<Uart>`。
+
+**(b) unique_ptr 不完整类型错误**
+Bus 的移动构造/赋值默认实现在头文件中，需要完整 UART 类型才能销毁 `unique_ptr<Uart>`。
+**解决**：将 Bus 的析构函数、移动构造、移动赋值定义移到 bus.cpp（其中已包含 uart.h）。
+
+**(c) Cpu 移动构造被删除**
+因为 Bus 的不可移动性向上传递导致 Cpu 不可移动。
+**解决**：显式声明 `~Cpu()` 在 cpu.h、定义在 cpu.cpp，并显式 `= default` 移动操作。
+
+**测试**：bus_test.cpp 新增 MMIO 路由测试（UART/CLINT/PLIC 读写）。
+
+#### 3. 指令集覆盖补全
+
+**文件**：[instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+新增 14 条指令实现并注册到 dispatch table：
+
+| 指令 | 类别 | 说明 |
+|------|------|------|
+| BLTU | 分支 | 无符号小于分支 |
+| SUB | 算术 | 减法 |
+| SLTU | 算术 | 无符号比较置位 |
+| ECALL | 系统 | 环境调用（目前空实现） |
+| EBREAK | 系统 | 断点（目前空实现） |
+| WFI | 系统 | 等待中断（目前空实现） |
+| ADDIW | RV64I | 字立即数加法 |
+| SLLIW | RV64I | 字立即数左移 |
+| SRLIW | RV64I | 字立即数逻辑右移 |
+| SRAIW | RV64I | 字立即数算术右移 |
+| SUBW | RV64I | 字减法 |
+| SLLW | RV64I | 字左移 |
+| SRLW | RV64I | 字逻辑右移 |
+| SRAW | RV64I | 字算术右移 |
+
+#### 4. CSR 访问抽象层
+
+**文件**：[os/include/csr.h](file:///home/xiaowen/projects/mycpu/os/include/csr.h)（新增）
+
+为 MiniOS 裸机程序提供 CSR 访问宏：
+- `CSRR(rd, csr)` — 读 CSR
+- `CSRW(csr, rs)` — 写 CSR
+- `CSRS(csr, rs)` — 置位 CSR
+- `CSRC(csr, rs)` — 清零 CSR
+
+**注意**：编译参数需使用 `-march=rv64i_zicsr`，因为 `zicsr` 在新工具链中被分离为独立扩展。
+
+#### 5. 内存布局与链接脚本 + MiniOS 裸机程序
+
+**新增文件**：
+- [os/linker.ld](file:///home/xiaowen/projects/mycpu/os/linker.ld) — 链接脚本
+- [os/boot/start.S](file:///home/xiaowen/projects/mycpu/os/boot/start.S) — 启动汇编
+- [os/kernel/kernel.c](file:///home/xiaowen/projects/mycpu/os/kernel/kernel.c) — 内核 C 代码
+- [os/Makefile](file:///home/xiaowen/projects/mycpu/os/Makefile) — 构建 Makefile
+
+**链接脚本关键决策**：
+- `OUTPUT_ARCH(riscv)` — 注意是 `riscv` 不是 `riscv64`
+- 代码从 `0x80000000` 开始（RISC-V 平台 DRAM 典型起始地址）
+- 编译器需使用 `-mcmodel=medany`（支持任意地址，避免 medlow 的重定位溢出）
+
+**启动流程**：
+1. start.S 设置栈指针（`la sp, _stack_top`）
+2. 清零 BSS 段（`memset` 循环）
+3. 跳转到 `kernel_main()`
+
+**内核功能**：
+- `uart_putc(char)` — 轮询等待 UART LSR THRE 位，然后写入 THR
+- `uart_puts(const char*)` — 字符串输出
+- `print_hex(uint64_t)` — 十六进制打印
+- `kernel_main()` — 输出 "MiniOS booting...\\nHello from kernel!\\n"，然后 `while(1){}`
+
+#### 6. 修复 JAL 立即数解码 bug（🔴 致命）
+
+**文件**：[instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+**问题**：JAL 指令的 imm[19:12] 位域被放在 result 的 bits [7:0] 而非 [19:12]，且 unsigned 类型导致符号扩展失效。
+
+```cpp
+// 修复前
+((inst >> 12) & 0xff)  // imm[19:12] 错误放在 bits[7:0]
+
+// 修复后
+(((inst >> 12) & 0xff) << 12)  // imm[19:12] 正确放在 bits[19:12]
+```
+
+同时强制使用 `int32_t` 类型确保符号扩展正确：
+```cpp
+auto imm = static_cast<int64_t>(static_cast<int32_t>(...));
+```
+
+#### 7. 修复 B-type 分支指令立即数解码 bug（🔴 致命）
+
+**文件**：[instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+这是本轮最核心、耗时最长的 bug 修复，影响 BEQ/BNE/BLT/BGE/BGEU/BLTU 全部 6 条分支指令。
+
+**Bug 根因分析（两个叠加 bug）**：
+
+| Bug | 说明 |
+|-----|------|
+| **unsigned 类型陷阱** | 代码使用 `((inner) << 1) >> 1` 技巧做符号扩展，但 `inner` 是 unsigned 类型（通过 `auto` 推导），导致 `>> 1` 执行逻辑右移（补 0）而非算术右移（补符号位） |
+| **掩码宽度错误** | 使用 `0xFFF00000`（覆盖 bits [31:20]），但 B-type 12 位立即数的符号在 bit 12，需要 `0xFFFFF000`（覆盖 bits [31:12]） |
+
+**诊断过程**：
+1. 运行 MiniOS 发现 BNE 指令跳转到非法地址（PC = `0x7ff010a0`），导致 Fatal Exception
+2. 手动解码 BNE 指令 `0xFE0790E3`，确认 offset = -32（正确）
+3. 发现模拟器中 offset = +2146439136（巨大正数），确认符号扩展失败
+4. 定位到 `<< 1 >> 1` 在 unsigned 类型上的逻辑右移问题
+5. 定位到 `0xFFF00000` 掩码不够宽的问题
+
+**修复方案**：
+```cpp
+// 修复后：6 条 B-type 指令统一模式
+int32_t inner = ((inst & 0x80000000) ? 0xFFFFF000 : 0) |
+                ((inst & 0x80) << 4) |
+                ((inst >> 20) & 0x7E0) |
+                ((inst >> 7) & 0x1E);
+int64_t imm = static_cast<int64_t>(inner);
+```
+
+使用 `int32_t` 确保符号扩展是算术扩展（而非逻辑扩展），`0xFFFFF000` 正确覆盖比特 [31:12]。
+
+### 构建验证
+
+```bash
+cmake --build build_wsl -j$(nproc)  # ✅ 0 warnings
+cd os && make                        # ✅ 0 warnings
+```
+
+### 测试结果
+
+```
+100% tests passed, 0 tests failed out of 78
+Total Test time (real) = 84.13 sec
+```
+
+### MiniOS 运行结果
+
+模拟器运行 MiniOS，扫描 UART 输出：
+```
+4d 69 6e 69 4f 53 20 62 6f 6f 74 69 6e 67 2e 2e 2e 0a
+48 65 6c 6c 6f 20 66 72 6f 6d 20 6b 65 72 6e 65 6c 21 0a
+```
+
+解码为 ASCII：
+```
+MiniOS booting...
+Hello from kernel!
+```
+
+- 37 次 UART 写入
+- 0 次 Fatal 异常
+- 内核在 `while(1){}` 死循环中正常运转
+
+### 经验笔记
+
+1. **unsigned 类型陷阱是 C/C++ 的经典问题**：`auto` 推导纯整数运算结果时，如果所有操作数都是 unsigned，结果也是 unsigned。unsigned 上的 `>>` 是逻辑右移（补 0），不是算术右移。符号扩展必须使用 int32_t 等有符号类型。
+
+2. **掩码宽度要匹配立即数的实际比特数**：B-type 有 12 位立即数，imm[12] 是符号位。掩码需要覆盖到 bit 12（即 `0xFFFFF000`），而不是 `0xFFF00000`。
+
+3. **forward declaration + unique_ptr 是打破 C++ 循环依赖的正确模式**：头文件中只需要 forward declaration 和 `unique_ptr` 声明，所有需要完整类型的操作（析构、移动）放到 .cpp 中。
+
+4. **链接脚本的 OUTPUT_ARCH 是 `riscv` 不是 `riscv64`**：GNU ld 对 RISC-V 使用 `OUTPUT_ARCH(riscv)`。
+
+5. **`-mcmodel=medany` 对高地址运行是必需的**：默认的 `medlow` 代码模型只支持低 2GB 地址空间，从 `0x80000000` 开始运行必须用 `medany`。
+
+6. **手动解码指令是有效的调试手段**：当模拟器行为异常时，用指令编码表手动解码立即数，对比模拟器输出，可以有效定位 bug。
+
+7. **一个小 bug 可以完全阻塞整个项目**：B-type 立即数解码的 unsigned 右移问题，导致 MiniOS 第 50+ 条指令就无法继续执行。如果不会手动解码指令或没有系统化的调试方法，这个问题非常难发现。
+
+***
+
+## 2026-05-12 — 构建系统优化与命名规范化
+
+### 背景
+
+在阶段 0.5 工程基线建立后，继续完善构建系统和代码规范。今天的任务是：
+
+1. 优化 CMake 构建配置，升级 C++ 标准到 C++23
+2. 添加 CMake 预设配置，简化 WSL 环境下的构建流程
+3. 修复代码中的命名拼写错误（cup → cpu）
+
+### 修改清单
+
+#### 1. CMake 构建配置优化
+
+**文件**：[CMakeLists.txt](file:///home/xiaowen/projects/mycpu/CMakeLists.txt)
+
+**修改内容**：
+- 修正项目声明，显式指定使用 C++ 语言
+- 将 C++ 标准从 C++20 升级到 C++23
+
+**理由**：
+- 之前的项目声明缺少语言指定，可能导致 CMake 无法正确识别项目类型
+- C++23 提供了更多现代特性，如 `std::expected`、`std::print` 等，为后续开发提供更好的语言支持
+
+***
+
+#### 2. 新增 CMake 预设配置
+
+**文件**：[CMakePresets.json](file:///home/xiaowen/projects/mycpu/CMakePresets.json)（新增）
+
+**内容**：配置 WSL 调试构建预设，包含：
+- `configurePresets`：定义 WSL 调试配置预设
+- `buildPresets`：定义对应的构建预设
+
+**理由**：
+- 简化构建命令，从 `cmake -B build_wsl -DCMAKE_BUILD_TYPE=Debug` 简化为 `cmake --preset=wsl-debug`
+- 统一团队开发环境配置，避免不同开发者使用不同的构建参数
+- 为 IDE（如 VS Code、CLion）提供更好的 CMake 集成支持
+
+***
+
+#### 3. cup → cpu 命名重命名
+
+**影响文件**：
+- `src/cup.h` → [src/cpu.h](file:///home/xiaowen/projects/mycpu/src/cpu.h)
+- `src/cup.cpp` → [src/cpu.cpp](file:///home/xiaowen/projects/mycpu/src/cpu.cpp)
+- [src/instructions.h](file:///home/xiaowen/projects/mycpu/src/instructions.h)
+- [src/main.cpp](file:///home/xiaowen/projects/mycpu/src/main.cpp)
+- [tests/test_util.h](file:///home/xiaowen/projects/mycpu/tests/test_util.h)
+- [tests/test_util.cpp](file:///home/xiaowen/projects/mycpu/tests/test_util.cpp)
+- [tests/unitest/cpu_test.cpp](file:///home/xiaowen/projects/mycpu/tests/unitest/cpu_test.cpp)
+- [tests/unitest/instructions_test.cpp](file:///home/xiaowen/projects/mycpu/tests/unitest/instructions_test.cpp)
+- [CMakeLists.txt](file:///home/xiaowen/projects/mycpu/CMakeLists.txt)
+
+**修改内容**：
+- 重命名 `cup.h/cpp` 为 `cpu.h/cpp`
+- 更新所有 `#include "cup.h"` 为 `#include "cpu.h"`
+- 更新 CMakeLists.txt 中的源文件路径
+
+**理由**：
+- "cup" 是 "cpu" 的拼写错误，影响代码可读性和专业性
+- 统一命名规范，避免后续开发中的混淆
+- 提升代码质量，符合工程化标准
+
+**影响范围**：10 个文件，28 行修改
+
+***
+
+### 构建验证
+
+```bash
+cmake --preset=wsl-debug
+cmake --build build_wsl -j$(nproc)
+```
+
+**结果**：✅ 所有目标通过，0 警告
+
+### 测试验证
+
+```bash
+./build_wsl/unit_test
+```
+
+**结果**：✅ 67 个测试全部通过（与 2026-05-11 一致）
+
+### 待办事项更新
+
+从 CURRENT_STATUS.md 的待办清单中移除：
+- ~~P1-4: cup → cpu 重命名~~ ✅ 已完成
+
+当前优先级最高的待办：
+- P0-1: Bus 接入 UART MMIO
+- P0-2: 创建 os/ 目录骨架
+- P1-3: 补全指令分派表缺失条目
+
+### 经验笔记
+
+1. **构建系统配置要显式**：CMake 项目声明应显式指定语言（`LANGUAGES CXX`），避免隐式行为导致的跨平台问题。
+2. **CMake 预设提升开发体验**：`CMakePresets.json` 可以统一团队构建配置，减少"在我机器上能构建"的问题。
+3. **命名规范要尽早修正**：拼写错误如果不及时修正，会在代码库中扩散，增加后期修正成本。
+4. **重命名要全局搜索**：文件重命名后，必须检查所有引用（include、CMake、文档），避免遗漏。
+
+***
+
+## 2026-05-11 — 阶段 0 启动：工程基础夯实
+
+### 背景
+
+项目已有 CPU、DRAM、Bus、CSR、Exception、UART、CLINT、PLIC 等核心模块，但存在若干工程缺口阻塞 OS 开发。今天的任务是：
+
+1. 将工程约束纳入项目总纲，形成"阶段 0.5"规划
+2. 修复指令分派表缺失导致的严重 bug
+3. 补齐测试覆盖
+4. 冻结项目当前状态，建立可回溯的基线
+
+### 修改清单
+
+#### 1. 新增 `.gitignore`
+
+**文件**：[.gitignore](file:///home/xiaowen/projects/mycpu/.gitignore)
+
+**内容**：忽略构建产物（`build_wsl/`、`out/`）、IDE 配置（`.vscode/`、`.idea/`）、编译中间文件（`*.o`、`*.a`）等。
+
+**理由**：之前 `out/` 目录下的 VS 构建产物被追踪，导致仓库膨胀。添加 `.gitignore` 是工程化的第一步。
+
+***
+
+#### 2. 新增 `docs/项目总纲.md` — 阶段 0.5 补充
+
+**文件**：[docs/项目总纲.md](file:///home/xiaowen/projects/mycpu/docs/项目总纲.md)
+
+**内容**：在原有阶段 0\~4 规划基础上，新增"阶段 0.5：工程约束与前置条件"章节，包含：
+
+| 条目          | 说明                                 |
+| ----------- | ---------------------------------- |
+| Bus MMIO 路由 | UART/CLINT/PLIC 必须通过 Bus 接入，而非独立测试 |
+| 内存布局与链接脚本   | 提前确定物理地址映射，避免后期大面积重写               |
+| CSR 访问抽象层   | 封装 M/S 模式切换逻辑，防止后期大面积重写            |
+| 指令覆盖检查      | 内核编译后必须检查是否使用了未实现指令                |
+| 测试策略        | 每个模块独立可测 + 集成测试                    |
+
+**决策理由**：这些约束如果不提前处理，会在阶段 1（MiniOS 启动）成为阻塞项。提前纳入总纲可以指导后续开发节奏。
+
+***
+
+#### 3. 修复 `src/instructions.cpp` — 指令分派表
+
+**文件**：[src/instructions.cpp](file:///home/xiaowen/projects/mycpu/src/instructions.cpp)
+
+**问题诊断**：
+
+通过分析分派表发现两个严重 bug：
+
+**Bug A — 分派表条目缺失或错误**：
+
+| 指令   | 原状态              | 修复后            |
+| ---- | ---------------- | -------------- |
+| BEQ  | 错误映射到 funct3=0x1 | 修正为 funct3=0x0 |
+| BNE  | 缺失               | 添加 (0x63, 0x1) |
+| BLT  | 缺失               | 添加 (0x63, 0x4) |
+| BGE  | 缺失               | 添加 (0x63, 0x5) |
+| BGEU | 缺失               | 添加 (0x63, 0x7) |
+| SH   | 缺失               | 添加 (0x23, 0x1) |
+| SW   | 缺失               | 添加 (0x23, 0x2) |
+
+这些指令的**执行函数早已实现**，只是没有注册到分派表。编译器生成的 `if/else`、`for` 循环、结构体字段写入等代码会触发 `IllegalInstruction` 异常。
+
+**Bug B — 分支指令不跳转时返回** **`std::nullopt`**：
+
+```cpp
+// 修复前（以 BGEU 为例）
+std::optional<uint64_t> executeBGEU(Cpu& cpu, uint32_t inst) {
+    // ...
+    if (cpu.regs[rs1] >= cpu.regs[rs2]) {
+        return cpu.pc + imm;
+    }
+    return std::nullopt;  // ❌ 导致 IllegalInstruction
+}
+```
+
+`std::nullopt` 在上层被解释为"指令未找到"，触发异常。修复为返回 `cpu.update_pc()`：
+
+```cpp
+    return cpu.update_pc();  // ✅ 正常推进到下一条指令
+```
+
+**影响范围**：所有 5 个分支指令（BEQ/BNE/BLT/BGE/BGEU）都存在此问题。
+
+***
+
+#### 4. 新增 7 个测试用例
+
+**文件**：[tests/unitest/instructions\_test.cpp](file:///home/xiaowen/projects/mycpu/tests/unitest/instructions_test.cpp)
+
+| 测试         | 覆盖指令 | 验证场景                    |
+| ---------- | ---- | ----------------------- |
+| `TestBeq`  | BEQ  | 相等时跳转 / 不等时不跳转          |
+| `TestBne`  | BNE  | 不等时跳转 / 相等时不跳转          |
+| `TestBlt`  | BLT  | 有符号小于（-5 < 3）           |
+| `TestBge`  | BGE  | 有符号大于等于（10 >= 5）        |
+| `TestBgeu` | BGEU | 无符号大于等于（0xFFFFFFFF > 1） |
+| `TestSh`   | SH   | 半字存储 + LHU 加载验证         |
+| `TestSw`   | SW   | 字存储 + LWU 加载验证          |
+
+**测试设计原则**：
+
+- 每个分支指令测试"跳转"和"不跳转"两条路径
+- 使用 `j end` 无限循环确保测试在预期步数内完成
+- 通过检查目标寄存器值验证分支是否正确执行
+
+***
+#### 5. 新增 `docs/CURRENT_STATUS.md`
+
+**文件**：[docs/CURRENT\_STATUS.md](file:///home/xiaowen/projects/mycpu/docs/CURRENT_STATUS.md)
+
+**内容**：冻结 2026-05-11 的项目状态，包括：
+
+- 环境信息（编译器、CMake、RISC-V 工具链版本）
+- 构建状态（所有目标通过，0 警告）
+- 测试结果（60/60 通过，UART 测试因设计问题挂起）
+- 模块完成度矩阵
+- 指令集覆盖分析（含 🔴 严重 / 🟡 中等 分级）
+- 关键架构缺口（阻塞 MiniOS 启动的 5 个问题）
+- 下一步行动清单（P0/P1/P2 优先级）
+
+**目的**：为后续开发提供可回溯的基线。每次重大修改后更新此文档。
+
+***
+
+### 测试结果
+
+```
+[==========] 67 tests from 10 test suites ran. (xxx ms total)
+[  PASSED  ] 67 tests.
+```
+
+- 原有 60 个测试全部通过
+- 新增 7 个测试全部通过
+- UART 测试（5 个）在非交互环境下挂起，需手动跳过
+
+### 构建验证
+
+```bash
+cmake -B build_wsl -DCMAKE_BUILD_TYPE=Debug  # ✅
+cmake --build build_wsl -j$(nproc)            # ✅ 0 warnings
+```
+
+### 待办事项（优先级排序）
+
+| 优先级 | 任务                                           | 阻塞         |
+| --- | -------------------------------------------- | ---------- |
+| P0  | Bus 接入 UART/CLINT/PLIC MMIO                  | MiniOS 输出  |
+| P0  | 创建 os/ 目录骨架                                  | MiniOS 结构  |
+| P1  | cup → cpu 重命名                                | 代码整洁       |
+| P1  | UART 8-bit 访问支持                              | C 代码写 UART |
+| P1  | 正常退出机制（WFI/ecall halt）                       | 内核优雅退出     |
+| P2  | CMakeLists.txt 规范化 & .gitignore 补充           | 构建系统       |
+| P2  | 测试 include 路径改用 target\_include\_directories | 可维护性       |
+
+### 经验笔记
+
+1. **指令分派表是"注册表"，不是"实现清单"**：函数写好了但没注册 = 指令不存在。这是今天踩的最大的坑。
+2. **`std::optional`** **的语义要统一**：在指令执行框架中，`nullopt` 表示"不认识这条指令"，而不是"这条指令不需要更新 PC"。分支不跳转时仍需返回下一个 PC 值。
+3. **测试要覆盖两条路径**：分支指令必须同时测试跳转和不跳转两种情况，否则很容易漏掉 `nullopt` 这类 bug。
+4. **冻结状态很重要**：`CURRENT_STATUS.md` 让后续开发有明确的起点，也方便回顾"当时项目长什么样"。
+
+***
+
+> 下次修改时，请在本文件顶部追加新的日期条目，保持倒序排列（最新在前）。

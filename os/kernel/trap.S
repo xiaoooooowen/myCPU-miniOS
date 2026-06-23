@@ -2,6 +2,21 @@
 .globl trap_entry
 .align 4
 trap_entry:
+    /*
+     * U-mode trap 使用 sscratch 中保存的内核栈顶。
+     * 先在用户栈暂存 t0，再判断 SPP；切换后通过 sscratch
+     * 找回用户栈地址和原始 t0。
+     */
+    addi sp, sp, -16
+    sd t0, 0(sp)
+    csrr t0, sstatus
+    andi t0, t0, 0x100
+    beqz t0, trap_from_user
+
+    # S-mode trap：撤销临时保存，继续使用当前内核栈
+    ld t0, 0(sp)
+    addi sp, sp, 16
+
     # 分配 trap 帧空间：32 * 8 = 256 字节
     addi sp, sp, -256
 
@@ -10,7 +25,23 @@ trap_entry:
     addi t0, sp, 256  # t0 = 进入 trap 前的 sp
     sd t0,  16(sp)   # x2 (sp) — 保存原始 sp
     ld t0,  40(sp)   # 恢复 t0 原始值
+    j save_remaining_registers
 
+trap_from_user:
+    # sscratch=内核栈顶；交换后 sscratch=用户sp-16
+    csrrw sp, sscratch, sp
+    addi sp, sp, -256
+
+    # 从用户栈临时槽恢复 t0，并保存陷入前的用户 sp
+    csrr t0, sscratch
+    ld t0, 0(t0)
+    sd t0, 40(sp)
+    csrr t0, sscratch
+    addi t0, t0, 16
+    sd t0, 16(sp)
+    ld t0, 40(sp)
+
+save_remaining_registers:
     # 保存其余通用寄存器（x0 硬连线零，跳过）
     sd x1,   8(sp)   # ra
     sd x3,  24(sp)   # gp

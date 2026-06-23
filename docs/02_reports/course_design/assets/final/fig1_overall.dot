@@ -1,0 +1,14 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+host [label="宿主环境\nWSL / CMake / Make / RISC-V 工具链"];
+cemu [label="cemu 模拟硬件层\nCPU / CSR / MMU / Bus / DRAM / 外设"];
+boot [label="两阶段启动\nboot.bin → kernel.bin → S-mode"];
+kernel [label="MiniOS 内核层\nTrap / Syscall / VM / Scheduler / MiniFS"];
+user [label="用户程序层\nELF / libc / Shell / 命令与测试程序"];
+host -> cemu -> boot -> kernel -> user;
+
+}

@@ -1,0 +1,17 @@
+digraph G {
+graph [bgcolor="white", pad=0.18, nodesep=0.35, ranksep=0.52, rankdir=TB];
+node [shape=box, style="rounded,filled", fillcolor="#F2F2F2", color="black",
+      fontname="Noto Sans SC", fontsize=12, margin="0.18,0.10"];
+edge [color="black", arrowsize=0.75, penwidth=1.1, fontname="Noto Sans SC", fontsize=10];
+
+cemu [label="cemu 仅加载 boot.bin\n0x80000000，M-mode"];
+header [label="Bootloader 读取扇区 15360\n校验 magic / version / size / entry"];
+load [label="读取 kernel.bin\n扇区 15361-16383"];
+checksum [label="计算并核对 32 位 checksum"];
+copy [label="搬运内核到 0x80200000\n跳转 _start"];
+init [label="设置栈 / 清零 BSS\n配置 mtvec、stvec 与委托"];
+mret [label="mstatus.MPP=S\nmepc=kernel_main\nmret"];
+shell [label="初始化内核子系统\n进入 U-mode Shell"];
+cemu -> header -> load -> checksum -> copy -> init -> mret -> shell;
+
+}
